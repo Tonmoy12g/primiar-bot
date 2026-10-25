@@ -16,8 +16,14 @@ A Telegram shop bot (python-telegram-bot v22+):
       Add Money, My Account, How it works, Support
   • Admin panel: coloured grouped reply keyboard (Product Add/List/Delete,
     Pending Request, Balance Add, bKash Number Set, Support ID Set,
-    Refer Bonus Set, Back) — no Settings submenu; values live in
-    the settings table
+    Refer Bonus Set, Force Channel Set, Back) — no Settings submenu;
+    values live in the settings table
+  • Force Channel (force-join): admin can set a channel username
+    (or OFF). When set, /start checks membership with get_chat_member
+    and shows a Join + "I Joined" gate to non-members. No channel set
+    means the feature is off. NOTE: the friend must make the bot an
+    admin of the channel for membership checks to work; a bad channel
+    or a bot that is not admin never crashes the bot (check fails open).
   • Reply-keyboard buttons are coloured (PTB 22+ styles, same pattern
     as the friend-colored bot's _mkb helper); inline buttons stay
     plain because Telegram cannot colour inline buttons.
@@ -85,7 +91,7 @@ logger = logging.getLogger(__name__)
  MONEY_AMOUNT, MONEY_TRXID,
  BAL_USER, BAL_AMOUNT,
  SUPPORT_MSG,
- SET_BKASH, SET_SUPPORT, SET_BONUS) = range(13)
+ SET_BKASH, SET_SUPPORT, SET_BONUS, SET_FORCE) = range(14)
 
 # ------------------------------------------------------------- main menu
 BTN_PREMIUM = "📁 Premium Files"
@@ -320,64 +326,163 @@ def set_refer_bonus(amount: int) -> None:
     set_setting("refer_bonus", str(amount))
 
 
+def get_force_channel() -> str:
+    """Force-join channel username (e.g. '@mychannel'), '' = feature off."""
+    return get_setting("force_channel", "")
+
+
+def set_force_channel(channel: str) -> None:
+    set_setting("force_channel", channel)
+
+
 def is_admin(user_id: int) -> bool:
     return ADMIN_ID != 0 and user_id == ADMIN_ID
 
 
 # ------------------------------------------------------------------ /start
+async def _credit_referral(user_id: int, referrer_id: int,
+                           context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Credit one refer bonus (once per referred user). True if credited."""
+    if not referrer_id or referrer_id == user_id:
+        return False
+    with _db_lock, db() as conn:
+        already = conn.execute(
+            "SELECT 1 FROM referrals WHERE referrer_id = ? "
+            "AND referred_id = ?",
+            (referrer_id, user_id),
+        ).fetchone()
+        row = conn.execute(
+            "SELECT referrer_id FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if already or (row is not None and row["referrer_id"] is not None):
+            return False
+        bonus = get_refer_bonus()
+        conn.execute(
+            "INSERT INTO referrals (referrer_id, referred_id) "
+            "VALUES (?, ?)",
+            (referrer_id, user_id),
+        )
+        conn.execute(
+            "UPDATE users SET referrer_id = ? WHERE user_id = ?",
+            (referrer_id, user_id),
+        )
+        conn.execute(
+            "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+            (bonus, referrer_id),
+        )
+        conn.commit()
+    try:
+        await context.bot.send_message(
+            referrer_id,
+            "🎉 Great news! A new friend just joined using your refer link!\n"
+            f"💰 ৳{bonus} bonus has been added to your balance.\n"
+            "👥 Keep sharing your link to earn more!",
+        )
+    except Exception as exc:  # referrer may block the bot
+        logger.warning("Could not notify referrer: %s", exc)
+    return True
+
+
+async def _force_membership(context: ContextTypes.DEFAULT_TYPE,
+                            user_id: int, channel: str):
+    """Force-channel check: True = member, False = not member, None = unknown.
+
+    Unknown covers a bad channel name and a bot that is not admin of the
+    channel — both fail open (the user is let through) so the bot never
+    breaks. IMPORTANT: the friend must make the bot an admin of the
+    channel for membership checks to work reliably.
+    """
+    try:
+        member = await context.bot.get_chat_member(
+            chat_id=channel, user_id=user_id)
+    except Exception as exc:
+        logger.warning("Force-channel check failed for %s: %s", channel, exc)
+        return None
+    return member.status in ("creator", "administrator", "member", "restricted")
+
+
+def _force_gate_markup(channel: str) -> InlineKeyboardMarkup:
+    url = f"https://t.me/{channel.lstrip('@')}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel", url=url)],
+        [InlineKeyboardButton("✅ I Joined", callback_data="force_check")],
+    ])
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     get_user(user.id, user.username, user.first_name)
 
-    # Referral: /start ref_<referrer_id>
+    # Referral: /start ref_<referrer_id> (credited after the force gate,
+    # so a gated user still earns their referrer the bonus once they join).
+    pending_ref = 0
     if context.args and context.args[0].startswith("ref_"):
         try:
-            referrer_id = int(context.args[0][4:])
+            pending_ref = int(context.args[0][4:])
         except ValueError:
-            referrer_id = 0
-        if referrer_id and referrer_id != user.id:
-            with _db_lock, db() as conn:
-                already = conn.execute(
-                    "SELECT 1 FROM referrals WHERE referrer_id = ? "
-                    "AND referred_id = ?",
-                    (referrer_id, user.id),
-                ).fetchone()
-                row = conn.execute(
-                    "SELECT referrer_id FROM users WHERE user_id = ?",
-                    (user.id,),
-                ).fetchone()
-                if not already and (row is None or row["referrer_id"] is None):
-                    bonus = get_refer_bonus()
-                    conn.execute(
-                        "INSERT INTO referrals (referrer_id, referred_id) "
-                        "VALUES (?, ?)",
-                        (referrer_id, user.id),
-                    )
-                    conn.execute(
-                        "UPDATE users SET referrer_id = ? WHERE user_id = ?",
-                        (referrer_id, user.id),
-                    )
-                    conn.execute(
-                        "UPDATE users SET balance = balance + ? "
-                        "WHERE user_id = ?",
-                        (bonus, referrer_id),
-                    )
-                    conn.commit()
-                    try:
-                        await context.bot.send_message(
-                            referrer_id,
-                            f"🎉 A new user joined with your refer link! "
-                            f"Bonus ৳{bonus} has been added to your "
-                            f"balance.",
-                        )
-                    except Exception as exc:  # referrer may block the bot
-                        logger.warning("Could not notify referrer: %s", exc)
+            pending_ref = 0
+
+    # Force Channel gate (skipped when off, and for the admin).
+    channel = get_force_channel()
+    if channel and not is_admin(user.id):
+        status = await _force_membership(context, user.id, channel)
+        if status is False:
+            if pending_ref:
+                context.user_data["pending_ref"] = pending_ref
+            await update.message.reply_text(
+                "👋 Welcome! To use this bot, please join our channel first:\n\n"
+                f"📢 {channel}\n\n"
+                "Tap Join below, then tap ✅ I Joined.",
+                reply_markup=_force_gate_markup(channel),
+            )
+            return
+        # status True (member) or None (check failed) -> proceed normally.
+
+    if pending_ref:
+        await _credit_referral(user.id, pending_ref, context)
 
     await update.message.reply_text(
         "👋 Welcome!\n"
         "Choose from the menu below — buy premium files, "
         "add money to your balance, or refer friends.",
         reply_markup=menu_for(update.effective_user.id),
+    )
+
+
+async def force_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """'✅ I Joined' tap: re-verify membership, then open the main menu."""
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    channel = get_force_channel()
+    if not channel or is_admin(user.id):
+        status = True
+    else:
+        status = await _force_membership(context, user.id, channel)
+    if status is False:
+        await query.answer(
+            "⚠️ You haven't joined the channel yet. "
+            "Please join first, then tap ✅ I Joined again.",
+            show_alert=True,
+        )
+        return
+    # Member (or check failed -> fail open): credit any pending referral,
+    # then show the main menu.
+    pending_ref = context.user_data.pop("pending_ref", 0)
+    if pending_ref:
+        await _credit_referral(user.id, pending_ref, context)
+    try:
+        await query.edit_message_text(
+            "✅ Thanks for joining! Welcome to the shop. 🎉")
+    except Exception as exc:
+        logger.warning("Could not edit force-gate message: %s", exc)
+    await context.bot.send_message(
+        chat_id=user.id,
+        text="👋 Welcome!\n"
+             "Choose from the menu below — buy premium files, "
+             "add money to your balance, or refer friends.",
+        reply_markup=menu_for(user.id),
     )
 
 
@@ -660,11 +765,14 @@ async def refer_earn_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     username = context.bot.username or "YourBotUsername"
     link = f"https://t.me/{username}?start=ref_{user.id}"
     await update.message.reply_text(
-        f"👥 Your Refer Link:\n{link}\n\n"
-        f"If someone new joins with this link, you will get "
-        f"৳{get_refer_bonus()} bonus per refer.\n"
-        f"💰 Total referral earning: ৳{earnings}\n"
-        f"✅ Total refers: {count}",
+        "🎁 Earn With Referrals\n\n"
+        "Share your personal link and earn "
+        f"৳{get_refer_bonus()} for every new friend who joins!\n\n"
+        f"🔗 Your Refer Link:\n{link}\n\n"
+        f"💰 Total Referral Earnings: ৳{earnings}\n"
+        f"👥 Total Friends Referred: {count}\n\n"
+        "✨ No limit — the more friends you invite, the more you earn. "
+        "Your bonus is added to your balance instantly.",
         reply_markup=menu_for(update.effective_user.id),
     )
 
@@ -676,16 +784,20 @@ async def my_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     count, earnings, referred = referral_stats(user.id)
     if not referred:
         await update.message.reply_text(
-            "🔗 No one has joined with your link yet.\n"
-            f"To get your refer link, go to {BTN_REFER_EARN}.",
+            "🔗 My Referrals\n\n"
+            "😊 No one has joined with your link yet — no problem!\n\n"
+            "Share your link with friends and earn "
+            f"৳{get_refer_bonus()} for every new member.\n\n"
+            f"👉 Get your link from {BTN_REFER_EARN} "
+            "and start earning today!",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
     lines = [
-        f"🔗 Your Referrals:\n",
-        f"✅ Total refers: {count}",
-        f"💰 Total earning: ৳{earnings}\n",
-        "👥 Referred users:",
+        "🔗 My Referrals\n",
+        f"👥 Total Friends Referred: {count}",
+        f"💰 Total Earnings: ৳{earnings}\n",
+        "🌟 Your Referred Friends:",
     ]
     for rid, first_name, uname in referred:
         label = first_name or "-"
@@ -694,6 +806,7 @@ async def my_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             label += f" (ID: {rid})"
         lines.append(f"• {label}")
+    lines.append("\n🎉 Keep sharing your link to earn more!")
     await update.message.reply_text("\n".join(lines), reply_markup=menu_for(update.effective_user.id))
 
 
@@ -739,10 +852,11 @@ def how_it_works_text() -> str:
         f"Enter an amount in {BTN_MONEY}, send the money via bKash "
         "and send the TrxID. Your balance will be updated once the "
         "admin approves it.\n\n"
-        "👥 Refer bonus:\n"
-        "If someone new joins with your refer link, you will get "
-        f"৳{get_refer_bonus()} bonus per refer. The bonus goes "
-        "directly to your balance."
+        "👥 Earn With Referrals:\n"
+        f"Share your link from {BTN_REFER_EARN}. Every time a new "
+        "friend joins with your link, you earn "
+        f"৳{get_refer_bonus()} — added straight to your balance. "
+        "No limit!"
     )
 
 
@@ -794,6 +908,7 @@ BTN_P_BAL = "💰 Balance Add"
 BTN_P_BKASH = "⚙️ bKash Number Set"
 BTN_P_SUPPORT = "🛟 Support ID Set"
 BTN_P_BONUS = "🎁 Refer Bonus Set"
+BTN_P_FORCE = "📢 Force Channel Set"
 
 
 def admin_panel_markup() -> ReplyKeyboardMarkup:
@@ -802,8 +917,8 @@ def admin_panel_markup() -> ReplyKeyboardMarkup:
         [_mkb(BTN_P_ADD, "success"), _mkb(BTN_P_LIST, "primary"),
          _mkb(BTN_P_DEL, "danger")],
         [_mkb(BTN_P_PENDING, "warning"), _mkb(BTN_P_BAL, "success")],
-        [_mkb(BTN_P_BKASH, "primary"), _mkb(BTN_P_SUPPORT, "primary"),
-         _mkb(BTN_P_BONUS, "success")],
+        [_mkb(BTN_P_BKASH, "primary"), _mkb(BTN_P_SUPPORT, "primary")],
+        [_mkb(BTN_P_BONUS, "success"), _mkb(BTN_P_FORCE, "warning")],
         [_mkb(BTN_BACK, "primary")],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -957,6 +1072,18 @@ async def panel_set_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return SET_BONUS
 
 
+async def panel_set_force(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
+        return None
+    current = get_force_channel() or "OFF (not set)"
+    await update.message.reply_text(
+        f"📢 Current Force Channel: {current}\n"
+        "Enter a channel username (e.g. @mychannel) or OFF to disable.\n"
+        "Note: the bot must be an admin of the channel for "
+        "membership checks to work.")
+    return SET_FORCE
+
+
 async def admin_delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -1009,6 +1136,30 @@ async def set_bonus_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     set_refer_bonus(amount)
     await update.message.reply_text(
         f"✅ Refer Bonus set: ৳{amount}",
+        reply_markup=menu_for(update.effective_user.id))
+    return ConversationHandler.END
+
+
+async def set_force_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text.upper() == "OFF":
+        set_force_channel("")
+        await update.message.reply_text(
+            "✅ Force Channel disabled. Users can now use the bot "
+            "without joining any channel.",
+            reply_markup=menu_for(update.effective_user.id))
+        return ConversationHandler.END
+    channel = text if text.startswith("@") else f"@{text}"
+    if not re.fullmatch(r"@[A-Za-z0-9_]{5,}", channel):
+        await update.message.reply_text(
+            "❌ Please enter a valid channel username starting with @ "
+            "(e.g. @mychannel) or OFF to disable.")
+        return SET_FORCE
+    set_force_channel(channel)
+    await update.message.reply_text(
+        f"✅ Force Channel set: {channel}\n"
+        "Users must join this channel before using the bot. "
+        "Make sure the bot is an admin of the channel.",
         reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
@@ -1144,6 +1295,7 @@ MENU_ACTIONS = {
     BTN_P_BKASH: panel_set_bkash,
     BTN_P_SUPPORT: panel_set_support,
     BTN_P_BONUS: panel_set_bonus,
+    BTN_P_FORCE: panel_set_force,
 }
 _MENU_PATTERN = "^(" + "|".join(re.escape(b) for b in MENU_ACTIONS) + ")$"
 
@@ -1243,6 +1395,12 @@ async def hint_bonus(update, context):
                        "🎁 Please enter the bonus amount in numbers.", SET_BONUS)
 
 
+async def hint_force(update, context):
+    return await _hint(update, context,
+                       "📢 Please enter the channel username (e.g. @mychannel) "
+                       "or OFF to disable.", SET_FORCE)
+
+
 def _state_handlers(*handlers, hint=None):
     """Menu router first, real step handlers next, friendly hint last."""
     ordered = [MessageHandler(filters.Regex(_MENU_PATTERN), menu_button_router)]
@@ -1292,6 +1450,9 @@ SHARED_STATES = {
     SET_BONUS: _state_handlers(
         MessageHandler(filters.TEXT & ~filters.COMMAND, set_bonus_step),
         hint=hint_bonus),
+    SET_FORCE: _state_handlers(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, set_force_step),
+        hint=hint_force),
 }
 
 
@@ -1392,6 +1553,8 @@ def main() -> None:
                            panel_set_support),
             MessageHandler(filters.Regex(f"^{BTN_P_BONUS}$"),
                            panel_set_bonus),
+            MessageHandler(filters.Regex(f"^{BTN_P_FORCE}$"),
+                           panel_set_force),
         ],
         states=SHARED_STATES,
         fallbacks=CONV_FALLBACKS,
@@ -1412,6 +1575,8 @@ def main() -> None:
         filters.Regex(f"^{BTN_P_DEL}$"), panel_delete_picker))
     app.add_handler(MessageHandler(
         filters.Regex(f"^{BTN_P_PENDING}$"), panel_pending))
+    app.add_handler(CallbackQueryHandler(
+        force_check, pattern="^force_check$"))
     app.add_handler(CallbackQueryHandler(
         admin_delete_product, pattern="^del_[0-9]+$"))
     app.add_handler(CallbackQueryHandler(
