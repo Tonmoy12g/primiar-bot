@@ -101,10 +101,11 @@ logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------- conversation states
 (ADD_NAME, ADD_PHOTO, ADD_DESC, ADD_PRICE, ADD_FILE,
- MONEY_AMOUNT, MONEY_TRXID,
+ MONEY_AMOUNT, MONEY_TRXID, MONEY_METHOD,
  BAL_USER, BAL_AMOUNT,
  SUPPORT_MSG,
- SET_BKASH, SET_SUPPORT, SET_BONUS, SET_FORCE) = range(14)
+ SET_BKASH, SET_SUPPORT, SET_BONUS, SET_FORCE,
+ SET_NAGAD, SET_ROCKET) = range(17)
 
 # ------------------------------------------------------------- main menu
 BTN_PREMIUM = "📁 Premium Files"
@@ -219,6 +220,12 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
         if "last_product_id" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN last_product_id INTEGER")
+        # Migration for deposit methods: record the method on requests.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(money_requests)")]
+        if "method" not in cols:
+            conn.execute(
+                "ALTER TABLE money_requests "
+                "ADD COLUMN method TEXT DEFAULT 'bKash'")
         conn.commit()
 
 
@@ -328,6 +335,75 @@ def get_bkash_number() -> str:
 
 def set_bkash_number(number: str) -> None:
     set_setting("bkash_number", number)
+
+
+def get_nagad_number() -> str:
+    return get_setting("nagad_number", "")
+
+
+def set_nagad_number(number: str) -> None:
+    set_setting("nagad_number", number)
+
+
+def get_rocket_number() -> str:
+    return get_setting("rocket_number", "")
+
+
+def set_rocket_number(number: str) -> None:
+    set_setting("rocket_number", number)
+
+
+# Deposit methods: key -> display name. A method is offered to users
+# only when it is switched ON and a number is set for it.
+DEPOSIT_METHODS = (
+    ("bkash", "bKash"),
+    ("nagad", "Nagad"),
+    ("rocket", "Rocket"),
+)
+
+
+_METHOD_BUTTONS = {
+    "bkash": "📱 bKash",
+    "nagad": "📱 Nagad",
+    "rocket": "🚀 Rocket",
+}
+
+
+def get_method_number(method: str) -> str:
+    if method == "bkash":
+        return get_bkash_number()
+    if method == "nagad":
+        return get_nagad_number()
+    return get_rocket_number()
+
+
+def is_method_enabled(method: str) -> bool:
+    return get_setting(f"method_{method}", "on") == "on"
+
+
+def toggle_method(method: str) -> bool:
+    new_state = not is_method_enabled(method)
+    set_setting(f"method_{method}", "on" if new_state else "off")
+    return new_state
+
+
+def available_methods():
+    """Methods that are ON and have a number set: (key, name, number)."""
+    offered = []
+    for key, name in DEPOSIT_METHODS:
+        number = get_method_number(key)
+        if is_method_enabled(key) and number:
+            offered.append((key, name, number))
+    return offered
+
+
+def deposit_methods_status_text() -> str:
+    lines = []
+    for key, name in DEPOSIT_METHODS:
+        state = "ON" if is_method_enabled(key) else "OFF"
+        number = "number set" if get_method_number(key) else "no number"
+        lines.append(f"• {name}: {state}, {number}")
+    return "\n".join(lines)
 
 
 def get_support_id() -> str:
@@ -3767,16 +3843,40 @@ async def back_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # -------------------------------------------------------------- add money
 async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    bkash = get_bkash_number()
-    if not bkash:
+    methods = available_methods()
+    if not methods:
         await update.message.reply_text(
-            "⚠️ The admin has not set a bKash number yet. "
-            "Please try again later.",
+            "⚠️ Deposits are currently unavailable. "
+            "Please contact Support for help.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return ConversationHandler.END
+    rows = [[_mkb(_METHOD_BUTTONS[key], "primary")] for key, _, _ in methods]
     await update.message.reply_text(
-        "💰 How much money do you want to add? Enter only the number (e.g. 100).",
+        "💰 Choose a payment method:",
+        reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
+    )
+    return MONEY_METHOD
+
+
+async def add_money_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    key = None
+    for method_key, button in _METHOD_BUTTONS.items():
+        if text == button:
+            key = method_key
+            break
+    offered = [k for k, _, _ in available_methods()]
+    if key is None or key not in offered:
+        await update.message.reply_text(
+            "❌ That payment method is not available right now. "
+            "Please choose another one.")
+        return MONEY_METHOD
+    context.user_data["money_method"] = key
+    name = dict(DEPOSIT_METHODS)[key]
+    await update.message.reply_text(
+        f"💰 How much money do you want to add via {name}? "
+        "Enter only the number (e.g. 100).",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_AMOUNT
@@ -3793,10 +3893,21 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "❌ Please enter a valid number (e.g. 100).")
         return MONEY_AMOUNT
     context.user_data["money_amount"] = amount
-    bkash = get_bkash_number()
+    method = context.user_data.get("money_method", "bkash")
+    name = dict(DEPOSIT_METHODS).get(method, "bKash")
+    number = get_method_number(method)
+    if not number:
+        await update.message.reply_text(
+            "⚠️ That payment method is not available right now. "
+            "Please choose another one.",
+            reply_markup=menu_for(update.effective_user.id),
+        )
+        context.user_data.pop("money_amount", None)
+        context.user_data.pop("money_method", None)
+        return ConversationHandler.END
     await update.message.reply_text(
-        f"💰 To add {amount} taka:\n\n"
-        f"1️⃣ Send {amount} taka via bKash to: {bkash}\n"
+        f"💰 To add {amount} taka via {name}:\n\n"
+        f"1️⃣ Send {amount} taka via {name} Send Money to: {number}\n"
         f"2️⃣ Send the payment TrxID here.",
         reply_markup=menu_for(update.effective_user.id),
     )
@@ -3806,12 +3917,14 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     trxid = update.message.text.strip()
     amount = context.user_data.get("money_amount")
+    method = context.user_data.get("money_method", "bkash")
+    name = dict(DEPOSIT_METHODS).get(method, "bKash")
     user = update.effective_user
     with _db_lock, db() as conn:
         cur = conn.execute(
-            "INSERT INTO money_requests (user_id, amount, trxid) "
-            "VALUES (?, ?, ?)",
-            (user.id, amount, trxid),
+            "INSERT INTO money_requests (user_id, amount, trxid, method) "
+            "VALUES (?, ?, ?, ?)",
+            (user.id, amount, trxid, method),
         )
         req_id = cur.lastrowid
         conn.commit()
@@ -3827,6 +3940,7 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"💰 New Add Money Request\n\n"
             f"👤 User: {user.full_name} (@{user.username or '-'}, "
             f"ID: {user.id})\n"
+            f"💳 Method: {name}\n"
             f"💵 Amount: ৳{amount}\n"
             f"🔢 TrxID: {trxid}",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -3834,11 +3948,16 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.warning("Could not notify admin: %s", exc)
     await update.message.reply_text(
-        "✅ Request sent. Your balance will be updated "
-        "once the admin verifies it.",
+        "✅ Deposit request received!\n\n"
+        "⏳ Your request could not be auto-verified, so it is now "
+        "under manual review. The admin will verify your transaction "
+        f"and add ৳{amount} to your balance.\n\n"
+        "There is no need to message support separately — "
+        "please wait patiently.",
         reply_markup=menu_for(update.effective_user.id),
     )
     context.user_data.pop("money_amount", None)
+    context.user_data.pop("money_method", None)
     return ConversationHandler.END
 
 
@@ -3863,6 +3982,7 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
             (status, req_id),
         )
         conn.commit()
+    method_name = dict(DEPOSIT_METHODS).get(req["method"] or "bkash", "bKash")
     if action == "approve":
         new_balance = change_balance(req["user_id"], req["amount"])
         try:
@@ -3874,7 +3994,7 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as exc:
             logger.warning("Could not notify user: %s", exc)
         await query.edit_message_text(
-            f"✅ Approved — ৳{req['amount']} has been added "
+            f"✅ Approved — ৳{req['amount']} ({method_name}) has been added "
             f"to User {req['user_id']}'s balance.")
     else:
         try:
@@ -3887,7 +4007,7 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
             logger.warning("Could not notify user: %s", exc)
         await query.edit_message_text(
             f"❌ Rejected — User {req['user_id']}'s ৳{req['amount']} "
-            f"request has been rejected.")
+            f"({method_name}) request has been rejected.")
 
 
 # ------------------------------------------------------------- refer earn
@@ -3982,7 +4102,7 @@ def how_it_works_text() -> str:
         "button. If you have enough balance, you will get the file "
         "right away.\n\n"
         "💰 To add money:\n"
-        f"Enter an amount in {BTN_MONEY}, send the money via bKash "
+        f"Enter an amount in {BTN_MONEY}, send the money via bKash, Nagad or Rocket "
         "and send the TrxID. Your balance will be updated once the "
         "admin approves it.\n\n"
         "👥 Earn With Referrals:\n"
@@ -4054,6 +4174,11 @@ BTN_P_BKASH = "⚙️ bKash Number Set"
 BTN_P_SUPPORT = "🛟 Support Username Set"
 BTN_P_BONUS = "🎁 Refer Bonus Set"
 BTN_P_FORCE = "📢 Force Channel Set"
+BTN_P_NAGAD = "⚙️ Nagad Number Set"
+BTN_P_ROCKET = "⚙️ Rocket Number Set"
+BTN_P_TOGGLE_BKASH = "🔄 Toggle bKash"
+BTN_P_TOGGLE_NAGAD = "🔄 Toggle Nagad"
+BTN_P_TOGGLE_ROCKET = "🔄 Toggle Rocket"
 
 
 def admin_panel_markup() -> ReplyKeyboardMarkup:
@@ -4063,6 +4188,10 @@ def admin_panel_markup() -> ReplyKeyboardMarkup:
          _mkb(BTN_P_DEL, "danger")],
         [_mkb(BTN_P_PENDING, "primary"), _mkb(BTN_P_BAL, "success")],
         [_mkb(BTN_P_BKASH, "primary"), _mkb(BTN_P_SUPPORT, "primary")],
+        [_mkb(BTN_P_NAGAD, "primary"), _mkb(BTN_P_ROCKET, "primary")],
+        [_mkb(BTN_P_TOGGLE_BKASH, "primary"),
+         _mkb(BTN_P_TOGGLE_NAGAD, "primary"),
+         _mkb(BTN_P_TOGGLE_ROCKET, "primary")],
         [_mkb(BTN_P_BONUS, "success"), _mkb(BTN_P_FORCE, "primary")],
         [_mkb(BTN_BACK, "primary")],
     ]
@@ -4084,7 +4213,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     await update.message.reply_text(
         "⚙️ Admin Panel\n"
-        "🛍️ Manage your shop — choose an option below:",
+        "🛍️ Manage your shop — choose an option below:\n\n"
+        "💳 Deposit methods:\n"
+        f"{deposit_methods_status_text()}",
         reply_markup=admin_panel_markup(),
     )
 
@@ -4167,6 +4298,7 @@ async def panel_pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"💰 Request #{r['id']}\n"
             f"👤 User ID: {r['user_id']}\n"
             f"💵 Amount: ৳{r['amount']}\n"
+            f"💳 Method: {dict(DEPOSIT_METHODS).get(r['method'] or 'bkash', 'bKash')}\n"
             f"🔢 TrxID: {r['trxid']}",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
@@ -4195,6 +4327,26 @@ async def panel_set_bkash(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"⚙️ Current bKash number: {current}\n"
         "Enter a new bKash number:")
     return SET_BKASH
+
+
+async def panel_set_nagad(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
+        return None
+    current = get_nagad_number() or "not set"
+    await update.message.reply_text(
+        f"⚙️ Current Nagad number: {current}\n"
+        "Enter a new Nagad number:")
+    return SET_NAGAD
+
+
+async def panel_set_rocket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
+        return None
+    current = get_rocket_number() or "not set"
+    await update.message.reply_text(
+        f"⚙️ Current Rocket number: {current}\n"
+        "Enter a new Rocket number:")
+    return SET_ROCKET
 
 
 async def panel_set_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -4230,6 +4382,32 @@ async def panel_set_force(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return SET_FORCE
 
 
+async def _toggle_method(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                       method: str) -> None:
+    if not await _admin_only(update):
+        return
+    new_state = toggle_method(method)
+    name = dict(DEPOSIT_METHODS)[method]
+    await update.message.reply_text(
+        f"✅ {name} deposits are now {'ON' if new_state else 'OFF'}.\n\n"
+        "💳 Deposit methods:\n"
+        f"{deposit_methods_status_text()}",
+        reply_markup=admin_panel_markup(),
+    )
+
+
+async def panel_toggle_bkash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _toggle_method(update, context, "bkash")
+
+
+async def panel_toggle_nagad(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _toggle_method(update, context, "nagad")
+
+
+async def panel_toggle_rocket(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _toggle_method(update, context, "rocket")
+
+
 async def admin_delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -4252,6 +4430,30 @@ async def set_bkash_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     set_bkash_number(number)
     await update.message.reply_text(
         f"✅ bKash number set: {number}",
+        reply_markup=menu_for(update.effective_user.id))
+    return ConversationHandler.END
+
+
+async def set_nagad_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    number = update.message.text.strip()
+    if not number:
+        await update.message.reply_text("❌ It cannot be empty. Please enter again:")
+        return SET_NAGAD
+    set_nagad_number(number)
+    await update.message.reply_text(
+        f"✅ Nagad number set: {number}",
+        reply_markup=menu_for(update.effective_user.id))
+    return ConversationHandler.END
+
+
+async def set_rocket_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    number = update.message.text.strip()
+    if not number:
+        await update.message.reply_text("❌ It cannot be empty. Please enter again:")
+        return SET_ROCKET
+    set_rocket_number(number)
+    await update.message.reply_text(
+        f"✅ Rocket number set: {number}",
         reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
@@ -4440,6 +4642,11 @@ MENU_ACTIONS = {
     BTN_P_PENDING: panel_pending,
     BTN_P_BAL: panel_add_balance,
     BTN_P_BKASH: panel_set_bkash,
+    BTN_P_NAGAD: panel_set_nagad,
+    BTN_P_ROCKET: panel_set_rocket,
+    BTN_P_TOGGLE_BKASH: panel_toggle_bkash,
+    BTN_P_TOGGLE_NAGAD: panel_toggle_nagad,
+    BTN_P_TOGGLE_ROCKET: panel_toggle_rocket,
     BTN_P_SUPPORT: panel_set_support,
     BTN_P_BONUS: panel_set_bonus,
     BTN_P_FORCE: panel_set_force,
@@ -4450,6 +4657,7 @@ _MENU_PATTERN = "^(" + "|".join(re.escape(b) for b in MENU_ACTIONS) + ")$"
 def _clear_flow_data(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Drop stale multi-step data so an abandoned flow can never leak in."""
     context.user_data.pop("money_amount", None)
+    context.user_data.pop("money_method", None)
     for key in ("prod_name", "prod_photo", "prod_desc", "prod_price", "bal_user"):
         context.user_data.pop(key, None)
 
@@ -4532,6 +4740,21 @@ async def hint_bkash(update, context):
                        "📱 Please enter the bKash number.", SET_BKASH)
 
 
+async def hint_money_method(update, context):
+    return await _hint(update, context,
+                       "💳 Please choose a payment method.", MONEY_METHOD)
+
+
+async def hint_nagad(update, context):
+    return await _hint(update, context,
+                       "📱 Please enter the Nagad number.", SET_NAGAD)
+
+
+async def hint_rocket(update, context):
+    return await _hint(update, context,
+                       "📱 Please enter the Rocket number.", SET_ROCKET)
+
+
 async def hint_support_id(update, context):
     return await _hint(update, context,
                        "🛟 Please enter the Support username (without @).", SET_SUPPORT)
@@ -4585,12 +4808,21 @@ SHARED_STATES = {
     MONEY_TRXID: _state_handlers(
         MessageHandler(filters.TEXT & ~filters.COMMAND, add_money_trxid),
         hint=hint_money_trxid),
+    MONEY_METHOD: _state_handlers(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, add_money_method),
+        hint=hint_money_method),
     SUPPORT_MSG: _state_handlers(
         MessageHandler(filters.TEXT & ~filters.COMMAND, support_receive),
         hint=hint_support),
     SET_BKASH: _state_handlers(
         MessageHandler(filters.TEXT & ~filters.COMMAND, set_bkash_step),
         hint=hint_bkash),
+    SET_NAGAD: _state_handlers(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, set_nagad_step),
+        hint=hint_nagad),
+    SET_ROCKET: _state_handlers(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, set_rocket_step),
+        hint=hint_rocket),
     SET_SUPPORT: _state_handlers(
         MessageHandler(filters.TEXT & ~filters.COMMAND, set_support_step),
         hint=hint_support_id),
@@ -4755,6 +4987,10 @@ def main() -> None:
         entry_points=[
             MessageHandler(filters.Regex(f"^{BTN_P_BKASH}$"),
                            panel_set_bkash),
+            MessageHandler(filters.Regex(f"^{BTN_P_NAGAD}$"),
+                           panel_set_nagad),
+            MessageHandler(filters.Regex(f"^{BTN_P_ROCKET}$"),
+                           panel_set_rocket),
             MessageHandler(filters.Regex(f"^{BTN_P_SUPPORT}$"),
                            panel_set_support),
             MessageHandler(filters.Regex(f"^{BTN_P_BONUS}$"),
@@ -4781,6 +5017,12 @@ def main() -> None:
         filters.Regex(f"^{BTN_P_DEL}$"), panel_delete_picker))
     app.add_handler(MessageHandler(
         filters.Regex(f"^{BTN_P_PENDING}$"), panel_pending))
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_TOGGLE_BKASH}$"), panel_toggle_bkash))
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_TOGGLE_NAGAD}$"), panel_toggle_nagad))
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_TOGGLE_ROCKET}$"), panel_toggle_rocket))
     app.add_handler(CallbackQueryHandler(
         force_check, pattern="^force_check$"))
     app.add_handler(CallbackQueryHandler(
