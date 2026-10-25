@@ -363,10 +363,21 @@ DEPOSIT_METHODS = (
 
 
 _METHOD_BUTTONS = {
-    "bkash": "bKash (Personal Send Money)",
-    "nagad": "Nagad (Personal Send Money)",
-    "rocket": "Rocket (Personal Send Money)",
+    "bkash": "🔴 বিকাশ (পার্সোনাল Send Money ⚡)",
+    "nagad": "🟠 নগদ (পার্সোনাল Send Money ⚡)",
+    "rocket": "🟣 রকেট (পার্সোনাল Send Money ⚡)",
 }
+
+
+# Bangla display names for the user-facing Add Money flow.
+_METHOD_BN = {
+    "bkash": ("🔴", "বিকাশ"),
+    "nagad": ("🟠", "নগদ"),
+    "rocket": ("🟣", "রকেট"),
+}
+
+
+_DIVIDER = "━━━━━━━━━━━━━━━━━━━━━"
 
 
 def get_method_number(method: str) -> str:
@@ -3846,16 +3857,23 @@ async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     methods = available_methods()
     if not methods:
         await update.message.reply_text(
-            "⚠️ Deposits are currently unavailable. "
-            "Please contact Support for help.",
+            "⚠️ বর্তমানে ডিপোজিট বন্ধ আছে। "
+            "সাহায্যের জন্য Support-এ যোগাযোগ করুন।",
             reply_markup=menu_for(update.effective_user.id),
         )
         return ConversationHandler.END
     rows = [[_mkb(_METHOD_BUTTONS[key], "primary")] for key, _, _ in methods]
+    lines = []
+    for key, _, _ in methods:
+        circle, bn = _METHOD_BN[key]
+        lines.append(f"{circle} {bn} (পার্সোনাল Send Money ⚡)")
     await update.message.reply_text(
-        "💰 Deposit / Balance Recharge (Send Money)\n\n"
-        "Send Money to our personal number to add balance automatically:\n\n"
-        "Click your preferred method:",
+        "💳 ডিপোজিট / ব্যালেন্স রিচার্জ (Send Money) ⚡\n"
+        f"{_DIVIDER}\n"
+        "আমাদের পার্সোনাল নাম্বারে Send Money করে স্বয়ংক্রিয়ভাবে ব্যালেন্স যোগ করুন:\n\n"
+        + "\n".join(lines) +
+        f"\n{_DIVIDER}\n"
+        "🔗 পছন্দের মাধ্যমে ক্লিক করুন:",
         reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
     )
     return MONEY_METHOD
@@ -3871,15 +3889,14 @@ async def add_money_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     offered = [k for k, _, _ in available_methods()]
     if key is None or key not in offered:
         await update.message.reply_text(
-            "❌ That payment method is not available right now. "
-            "Please choose another one.")
+            "❌ এই মাধ্যমটি বর্তমানে চালু নেই। অন্য একটি বেছে নিন।")
         return MONEY_METHOD
     context.user_data["money_method"] = key
-    name = dict(DEPOSIT_METHODS)[key]
+    circle, bn = _METHOD_BN[key]
     await update.message.reply_text(
-        f"{name} Personal Deposit (Send Money)\n\n"
-        "How much money (৳) do you want to deposit? "
-        "Send the amount (e.g. 50, 100, 500):",
+        f"💵 {bn} (পার্সোনাল Send Money) ⚡\n"
+        f"{_DIVIDER}\n"
+        "কত টাকা (৳) ডিপোজিট করতে চান লিখে পাঠান (যেমন: 50, 100, 500):",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_AMOUNT
@@ -3893,34 +3910,33 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "❌ Please enter a valid number (e.g. 100).")
+            "❌ সঠিক সংখ্যা লিখুন (যেমন: 100)।")
         return MONEY_AMOUNT
     context.user_data["money_amount"] = amount
     method = context.user_data.get("money_method", "bkash")
-    name = dict(DEPOSIT_METHODS).get(method, "bKash")
     number = get_method_number(method)
     if not number:
         await update.message.reply_text(
-            "⚠️ That payment method is not available right now. "
-            "Please choose another one.",
+            "⚠️ এই মাধ্যমটি বর্তমানে চালু নেই। অন্য একটি বেছে নিন।",
             reply_markup=menu_for(update.effective_user.id),
         )
         context.user_data.pop("money_amount", None)
         context.user_data.pop("money_method", None)
         return ConversationHandler.END
-    trxid_hint = "10-digit " if method == "bkash" else ""
+    circle, bn = _METHOD_BN.get(method, ("🔴", "বিকাশ"))
     await update.message.reply_text(
-        f"{name} Personal Deposit (Send Money)\n\n"
-        f"Deposit Amount: ৳{amount}\n"
-        f"{name} Personal Number: {number}\n\n"
-        "How to pay:\n"
-        f"1. Send exactly ৳{amount} Send Money to the number above!\n"
-        "2. After successful Send Money, copy the TrxID from the "
-        "received message.\n"
-        "3. Send your TrxID below.\n"
-        "Your balance will be added automatically as soon as the money "
-        "is received!\n\n"
-        f"Please send your {name} {trxid_hint}TrxID below:",
+        f"{circle} {bn} পার্সোনাল ডিপোজিট (Send Money) ⚡\n"
+        f"{_DIVIDER}\n"
+        f"💵 ডিপোজিট পরিমাণ: {amount} ৳\n"
+        f"📱 {bn} পার্সোনাল নম্বর:\n"
+        f"{number}\n\n"
+        "📌 পেমেন্ট করার নিয়ম:\n"
+        f"১. ওপরের নম্বরে ঠিক {amount} ৳ Send Money করুন।\n"
+        "২. সেন্ড মানি সফল হলে প্রাপ্ত মেসেজ থেকে TrxID কপি করুন।\n"
+        "৩. নিচে আপনার TrxID টি লিখে পাঠিয়ে দিন।\n"
+        f"{_DIVIDER}\n"
+        "⚡ টাকা পাওয়ার সাথে সাথে স্বয়ংক্রিয়ভাবে ব্যালেন্স যোগ হয়ে যাবে!\n\n"
+        f"দয়া করে আপনার {bn} এর ১০ সংখ্যার TrxID টি নিচে লিখে পাঠান:",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_TRXID
@@ -3930,12 +3946,13 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trxid = update.message.text.strip().upper()
     if not trxid:
         await update.message.reply_text(
-            "❌ Please send your TrxID.")
+            "❌ আপনার TrxID টি পাঠান।")
         return MONEY_TRXID
     amount = context.user_data.get("money_amount")
     method = context.user_data.get("money_method", "bkash")
     name = dict(DEPOSIT_METHODS).get(method, "bKash")
     number = get_method_number(method)
+    _, bn = _METHOD_BN.get(method, ("🔴", "বিকাশ"))
     user = update.effective_user
     with _db_lock, db() as conn:
         cur = conn.execute(
@@ -3965,20 +3982,15 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.warning("Could not notify admin: %s", exc)
     await update.message.reply_text(
-        "⚠️ Auto deposit has a temporary issue!\n\n"
-        "Your deposit request has been received and is currently "
-        "pending.\n\n"
-        "👨‍💼 Admin Review: As auto verification failed, the admin "
-        "will manually verify your transaction and add the balance "
-        "within 6 hours.\n\n"
-        "❗ This request has already reached the admin, so there is "
-        "no need to message or SMS the support ID. "
-        "Please wait patiently!\n\n"
-        f"💳 Deposit Method: {name}\n"
-        f"📱 Sender Number: {number}\n"
-        f"💵 Deposit Amount: ৳{amount}\n"
+        "⚠️ অটো ডিপোজিটে সাময়িক সমস্যা হয়েছে!\n\n"
+        "🕰️ আপনার ডিপোজিট রিকোয়েস্টটি গ্রহণ করা হয়েছে এবং বর্তমানে পেন্ডিং রয়েছে।\n\n"
+        "👨‍💼 এডমিন রিভিউ: অটো ভেরিফিকেশনে ব্যর্থ হওয়ায় ম্যানুয়ালি আপনার ট্রানজেকশনটি যাচাই করে ৬ ঘণ্টার মধ্যে ব্যালেন্স যোগ করে দেবে।\n\n"
+        "❗ রিকোয়েস্টটি ইতিমধ্যে এডমিনের কাছে চলে গেছে, তাই সাপোর্ট আইডিতে মেসেজ বা এসএমএস করার প্রয়োজন নেই। ধৈর্য ধরে অপেক্ষা করুন!\n\n"
+        f"💳 ডিপোজিট মাধ্যম: {bn}\n"
+        f"📱 প্রেরক নম্বর: {number}\n"
+        f"💵 ডিপোজিট পরিমাণ: {amount} ৳\n"
         f"🔑 TrxID: {trxid}\n"
-        "⏳ Status: Manual Review Pending (Pending)",
+        "⏳ স্ট্যাটাস: ম্যানুয়াল রিভিউ পেন্ডিং (Pending)",
         reply_markup=menu_for(update.effective_user.id),
     )
     context.user_data.pop("money_amount", None)
