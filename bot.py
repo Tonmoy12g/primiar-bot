@@ -27,6 +27,8 @@ A Telegram shop bot (python-telegram-bot v22+):
   • Reply-keyboard buttons are coloured (PTB 22+ styles, same pattern
     as the friend-colored bot's _mkb helper); inline buttons stay
     plain because Telegram cannot colour inline buttons.
+  • Optional banner.jpg next to bot.py is sent as a photo with the
+    /start Welcome (text-only fallback if the file is missing).
   • v4 flow: Premium Files shows product NAMES as coloured
     reply-keyboard buttons; tapping a name shows photo + description
     + price with a coloured reply-keyboard Buy button. The last-viewed
@@ -116,8 +118,19 @@ BTN_BACK = "🔙 Back"
 BTN_ADMIN = "⚙️ Admin Panel"
 
 
+_VALID_BUTTON_STYLES = ("primary", "success", "danger")
+
+
 def _mkb(text, style="primary"):
-    """Coloured reply-keyboard button (PTB 22+); plain button on older PTB — never crashes."""
+    """Coloured reply-keyboard button (PTB 22+); plain button on older PTB — never crashes.
+
+    Telegram only accepts 'primary', 'success' and 'danger' styles. An
+    invalid style (e.g. 'warning') makes Telegram reject the WHOLE message
+    with BadRequest, so unknown styles fall back to 'primary' instead of
+    breaking the send.
+    """
+    if style not in _VALID_BUTTON_STYLES:
+        style = "primary"
     try:
         return KeyboardButton(text, style=style)
     except (TypeError, ValueError):
@@ -419,6 +432,43 @@ def _force_gate_markup(channel: str) -> InlineKeyboardMarkup:
     ])
 
 
+BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "banner.jpg")
+
+
+def _welcome_text() -> str:
+    """Main Welcome text (English, short enough for a photo caption)."""
+    try:
+        bonus = get_refer_bonus()
+    except Exception:
+        bonus = DEFAULT_REFER_BONUS
+    return (
+        "👋 Welcome to Premium Files Bot!\n\n"
+        "🛍️ Buy premium files instantly\n"
+        "💰 Add money to your balance\n"
+        f"👥 Refer friends and earn ৳{bonus} per friend\n\n"
+        "Tap a button below to get started ✨"
+    )
+
+
+async def _deliver_welcome(send_text, send_photo, user_id: int) -> None:
+    """Send the main Welcome: banner photo + caption if banner.jpg exists
+    next to bot.py, otherwise the text welcome. A missing or unreadable
+    banner never crashes anything — it always falls back to text."""
+    text = _welcome_text()
+    markup = menu_for(user_id)
+    banner = BANNER_PATH if os.path.isfile(BANNER_PATH) else None
+    if banner is not None:
+        try:
+            with open(banner, "rb") as photo:
+                await send_photo(photo, text, markup)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Banner send failed, falling back to text welcome: %s", exc)
+    await send_text(text, markup)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     get_user(user.id, user.username, user.first_name)
@@ -451,11 +501,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if pending_ref:
         await _credit_referral(user.id, pending_ref, context)
 
-    await update.message.reply_text(
-        "👋 Welcome!\n"
-        "Choose from the menu below — buy premium files, "
-        "add money to your balance, or refer friends.",
-        reply_markup=menu_for(update.effective_user.id),
+    await _deliver_welcome(
+        lambda t, m: update.message.reply_text(t, reply_markup=m),
+        lambda p, t, m: update.message.reply_photo(
+            photo=p, caption=t, reply_markup=m),
+        update.effective_user.id,
     )
 
 
@@ -486,12 +536,12 @@ async def force_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "✅ Thanks for joining! Welcome to the shop. 🎉")
     except Exception as exc:
         logger.warning("Could not edit force-gate message: %s", exc)
-    await context.bot.send_message(
-        chat_id=user.id,
-        text="👋 Welcome!\n"
-             "Choose from the menu below — buy premium files, "
-             "add money to your balance, or refer friends.",
-        reply_markup=menu_for(user.id),
+    await _deliver_welcome(
+        lambda t, m: context.bot.send_message(
+            chat_id=user.id, text=t, reply_markup=m),
+        lambda p, t, m: context.bot.send_photo(
+            chat_id=user.id, photo=p, caption=t, reply_markup=m),
+        user.id,
     )
 
 
@@ -925,9 +975,9 @@ def admin_panel_markup() -> ReplyKeyboardMarkup:
     rows = [
         [_mkb(BTN_P_ADD, "success"), _mkb(BTN_P_LIST, "primary"),
          _mkb(BTN_P_DEL, "danger")],
-        [_mkb(BTN_P_PENDING, "warning"), _mkb(BTN_P_BAL, "success")],
+        [_mkb(BTN_P_PENDING, "primary"), _mkb(BTN_P_BAL, "success")],
         [_mkb(BTN_P_BKASH, "primary"), _mkb(BTN_P_SUPPORT, "primary")],
-        [_mkb(BTN_P_BONUS, "success"), _mkb(BTN_P_FORCE, "warning")],
+        [_mkb(BTN_P_BONUS, "success"), _mkb(BTN_P_FORCE, "primary")],
         [_mkb(BTN_BACK, "primary")],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
