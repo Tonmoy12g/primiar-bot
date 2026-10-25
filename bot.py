@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Paid File Sell Bot — v3
+Paid File Sell Bot — v4
 ========================
 A Telegram shop bot (python-telegram-bot v22+):
   • Admin adds products (name, photo, description, price, file)
@@ -10,17 +10,21 @@ A Telegram shop bot (python-telegram-bot v22+):
   • Referral: referrer gets ৳2 bonus per new referred user (once each)
   • Balance is direct taka money only — NO points system
   • No payment gateway integration
-  • Main menu (8 buttons + Admin Panel button for admins only, Banglish UI):
+  • Main menu (8 English buttons + Admin Panel button for admins
+    only; everything in English):
       Premium Files, Refer Earn, My Balance, My Referral,
       Add Money, My Account, How it works, Support
-  • Admin Settings: bKash number, Support ID, Refer Bonus (all in settings table)
+  • Admin panel: coloured grouped reply keyboard (Product Add/List/Delete,
+    Pending Request, Balance Add, bKash Number Set, Support ID Set,
+    Refer Bonus Set, Back) — no Settings submenu; values live in
+    the settings table
   • Reply-keyboard buttons are coloured (PTB 22+ styles, same pattern
     as the friend-colored bot's _mkb helper); inline buttons stay
     plain because Telegram cannot colour inline buttons.
-  • v3 flow: Premium Files shows product NAMES as coloured
+  • v4 flow: Premium Files shows product NAMES as coloured
     reply-keyboard buttons; tapping a name shows photo + description
-    + price with a coloured reply-keyboard Kinun button. The last-viewed
-    product per user is tracked in the DB so Buy knows what to sell.
+    + price with a coloured reply-keyboard Buy button. The last-viewed
+    product per user is tracked in the DB so the Buy button knows what to sell.
     Product management (add/list/delete) stays in the admin panel only.
 
 Setup:
@@ -92,8 +96,8 @@ BTN_MONEY = "💰 Add Money"
 BTN_ACCOUNT = "👤 My Account"
 BTN_HOW = "❓ How it works"
 BTN_SUPPORT = "🛟 Support"
-BTN_BUY = "🛒 Kinun"
-BTN_BACK = "🔙 Fire"
+BTN_BUY = "🛒 Buy"
+BTN_BACK = "🔙 Back"
 BTN_ADMIN = "⚙️ Admin Panel"
 
 
@@ -101,7 +105,7 @@ def _mkb(text, style="primary"):
     """Coloured reply-keyboard button (PTB 22+); plain button on older PTB — never crashes."""
     try:
         return KeyboardButton(text, style=style)
-    except TypeError:
+    except (TypeError, ValueError):
         return KeyboardButton(text)
 
 
@@ -181,7 +185,7 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
         if "first_name" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN first_name TEXT DEFAULT ''")
-        # Migration for v3: track last-viewed product per user (Kinun button).
+        # Migration for v3: track last-viewed product per user (Buy button).
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
         if "last_product_id" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN last_product_id INTEGER")
@@ -362,17 +366,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     try:
                         await context.bot.send_message(
                             referrer_id,
-                            f"🎉 Apnar refer link diye ekjon notun user "
-                            f"join koreche! Bonus ৳{bonus} apnar "
-                            f"balance-e jog hoyeche.",
+                            f"🎉 A new user joined with your refer link! "
+                            f"Bonus ৳{bonus} has been added to your "
+                            f"balance.",
                         )
                     except Exception as exc:  # referrer may block the bot
                         logger.warning("Could not notify referrer: %s", exc)
 
     await update.message.reply_text(
-        "👋 Assalamu Alaikum! Welcome.\n"
-        "Nicher menu theke beche nin — premium file kinun, "
-        "balance-e taka add korun, ba bondhuder refer korun.",
+        "👋 Welcome!\n"
+        "Choose from the menu below — buy premium files, "
+        "add money to your balance, or refer friends.",
         reply_markup=menu_for(update.effective_user.id),
     )
 
@@ -415,13 +419,13 @@ async def premium_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
     if count == 0:
         await update.message.reply_text(
-            "📁 Ekhono kono premium file add kora hoyni. Pore abar check korun.",
+            "📁 No premium files have been added yet. Please check again later.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
     context.user_data["nav"] = "products"
     await update.message.reply_text(
-        "📁 Premium Files — jeta kinte chan setar nam-e click korun:",
+        f"{BTN_PREMIUM} — tap the file name you want to buy:",
         reply_markup=products_keyboard(),
     )
 
@@ -442,7 +446,7 @@ async def product_detail_by_name(update: Update, context: ContextTypes.DEFAULT_T
         ).fetchone()
     if product is None:
         await update.message.reply_text(
-            "❌ Bujhte parini. Menu theke beche nin.",
+            "❌ Sorry, I didn't understand that. Please choose from the menu.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
@@ -461,7 +465,7 @@ async def product_detail_by_name(update: Update, context: ContextTypes.DEFAULT_T
         photo=product["photo_id"],
         caption=f"📌 {product['name']}\n\n"
                 f"{product['description']}\n\n"
-                f"💰 Dam: ৳{product['price']}",
+                f"💰 Price: ৳{product['price']}",
         reply_markup=keyboard,
     )
 
@@ -472,7 +476,7 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                   or get_last_product(user_id))
     if not product_id:
         await update.message.reply_text(
-            "❌ Prothome 📁 Premium Files theke ekta file beche nin.",
+            f"❌ First choose a file from {BTN_PREMIUM}.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
@@ -481,15 +485,15 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "SELECT * FROM products WHERE id = ?", (product_id,)
         ).fetchone()
     if product is None:
-        await update.message.reply_text("❌ Ei product-ti ar nei.",
+        await update.message.reply_text("❌ This product is no longer available.",
                                         reply_markup=menu_for(update.effective_user.id))
         return
     balance = get_balance(user_id)
     if balance < product["price"]:
         await update.message.reply_text(
-            f"⚠️ Apnar balance kom! Bortoman balance: ৳{balance}, "
-            f"dam: ৳{product['price']}.\n"
-            f"Prothome 💰 Add Money theke balance-e taka add korun.",
+            f"⚠️ Your balance is too low! Current balance: ৳{balance}, "
+            f"price: ৳{product['price']}.\n"
+            f"First add money from {BTN_MONEY}.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
@@ -498,11 +502,11 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await context.bot.send_document(
         chat_id=user_id,
         document=product["file_id"],
-        caption=f"✅ Kena somponno! {product['name']}\n"
-                f"💳 Bortoman balance: ৳{new_balance}",
+        caption=f"✅ Purchase complete! {product['name']}\n"
+                f"💳 Current balance: ৳{new_balance}",
     )
     await update.message.reply_text(
-        "👍 Dhonnobad! Menu theke abar beche nin.",
+        "👍 Thank you! Choose from the menu again.",
         reply_markup=menu_for(update.effective_user.id),
     )
 
@@ -512,7 +516,7 @@ async def back_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if nav == "detail":
         context.user_data["nav"] = "products"
         await update.message.reply_text(
-            "📁 Premium Files — jeta kinte chan setar nam-e click korun:",
+            f"{BTN_PREMIUM} — tap the file name you want to buy:",
             reply_markup=products_keyboard(),
         )
     else:
@@ -528,13 +532,13 @@ async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     bkash = get_bkash_number()
     if not bkash:
         await update.message.reply_text(
-            "⚠️ Admin ekhono bKash number set koren ni. "
-            "Pore abar chesta korun.",
+            "⚠️ The admin has not set a bKash number yet. "
+            "Please try again later.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return ConversationHandler.END
     await update.message.reply_text(
-        "💰 Koto taka add korte chan? Shudhu sonkhata likhun (jemon: 100).",
+        "💰 How much money do you want to add? Enter only the number (e.g. 100).",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_AMOUNT
@@ -548,14 +552,14 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "❌ Sothik sonkha likhun (jemon: 100).")
+            "❌ Please enter a valid number (e.g. 100).")
         return MONEY_AMOUNT
     context.user_data["money_amount"] = amount
     bkash = get_bkash_number()
     await update.message.reply_text(
-        f"💰 {amount} taka add korte:\n\n"
-        f"1️⃣ bKash-e {amount} taka pathan: {bkash}\n"
-        f"2️⃣ Payment-er TrxID-ti ekhane pathan.",
+        f"💰 To add {amount} taka:\n\n"
+        f"1️⃣ Send {amount} taka via bKash to: {bkash}\n"
+        f"2️⃣ Send the payment TrxID here.",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_TRXID
@@ -574,26 +578,26 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         req_id = cur.lastrowid
         conn.commit()
     keyboard = [[
-        InlineKeyboardButton("✅ Onumodon",
+        InlineKeyboardButton("✅ Approve",
                              callback_data=f"approve_{req_id}"),
-        InlineKeyboardButton("❌ Batil",
+        InlineKeyboardButton("❌ Reject",
                              callback_data=f"reject_{req_id}"),
     ]]
     try:
         await context.bot.send_message(
             ADMIN_ID,
-            f"💰 Notun Add Money Request\n\n"
+            f"💰 New Add Money Request\n\n"
             f"👤 User: {user.full_name} (@{user.username or '-'}, "
             f"ID: {user.id})\n"
-            f"💵 Poriman: ৳{amount}\n"
+            f"💵 Amount: ৳{amount}\n"
             f"🔢 TrxID: {trxid}",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as exc:
         logger.warning("Could not notify admin: %s", exc)
     await update.message.reply_text(
-        "✅ Request pathano hoyeche. Admin verify korlei "
-        "balance-e taka jog hobe.",
+        "✅ Request sent. Your balance will be updated "
+        "once the admin verifies it.",
         reply_markup=menu_for(update.effective_user.id),
     )
     context.user_data.pop("money_amount", None)
@@ -604,7 +608,7 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
-        await query.edit_message_text("❌ Shudhu admin eta korte parben.")
+        await query.edit_message_text("❌ Only the admin can do this.")
         return
     action, req_id = query.data.split("_", 1)
     req_id = int(req_id)
@@ -613,7 +617,7 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
             "SELECT * FROM money_requests WHERE id = ?", (req_id,)
         ).fetchone()
         if req is None or req["status"] != "pending":
-            await query.edit_message_text("⚠️ Ei request-ti ar pending nei.")
+            await query.edit_message_text("⚠️ This request is no longer pending.")
             return
         status = "approved" if action == "approve" else "rejected"
         conn.execute(
@@ -626,26 +630,26 @@ async def money_request_decision(update: Update, context: ContextTypes.DEFAULT_T
         try:
             await context.bot.send_message(
                 req["user_id"],
-                f"✅ Apnar ৳{req['amount']} Add Money Approve hoyeche!\n"
-                f"💳 Bortoman balance: ৳{new_balance}",
+                f"✅ Your ৳{req['amount']} Add Money request has been approved!\n"
+                f"💳 Current balance: ৳{new_balance}",
             )
         except Exception as exc:
             logger.warning("Could not notify user: %s", exc)
         await query.edit_message_text(
-            f"✅ Onumodon kora hoyeche — User {req['user_id']} er balance-e "
-            f"৳{req['amount']} jog hoyeche.")
+            f"✅ Approved — ৳{req['amount']} has been added "
+            f"to User {req['user_id']}'s balance.")
     else:
         try:
             await context.bot.send_message(
                 req["user_id"],
-                f"❌ Apnar ৳{req['amount']} Add Money request "
-                f"Reject hoyeche. TrxID thik thakle abar request korun.",
+                f"❌ Your ৳{req['amount']} Add Money request "
+                f"was rejected. If your TrxID is correct, please request again.",
             )
         except Exception as exc:
             logger.warning("Could not notify user: %s", exc)
         await query.edit_message_text(
-            f"❌ Batil kora hoyeche — User {req['user_id']} er ৳{req['amount']} "
-            f"request batil hoyeche.")
+            f"❌ Rejected — User {req['user_id']}'s ৳{req['amount']} "
+            f"request has been rejected.")
 
 
 # ------------------------------------------------------------- refer earn
@@ -656,11 +660,11 @@ async def refer_earn_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     username = context.bot.username or "YourBotUsername"
     link = f"https://t.me/{username}?start=ref_{user.id}"
     await update.message.reply_text(
-        f"👥 Apnar Refer Link:\n{link}\n\n"
-        f"Ei link diye keu notun join korle apni paben "
-        f"proti refer-e ৳{get_refer_bonus()} bonus.\n"
-        f"💰 Mot referral earning: ৳{earnings}\n"
-        f"✅ Mot refer: {count} jon",
+        f"👥 Your Refer Link:\n{link}\n\n"
+        f"If someone new joins with this link, you will get "
+        f"৳{get_refer_bonus()} bonus per refer.\n"
+        f"💰 Total referral earning: ৳{earnings}\n"
+        f"✅ Total refers: {count}",
         reply_markup=menu_for(update.effective_user.id),
     )
 
@@ -672,16 +676,16 @@ async def my_referral_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     count, earnings, referred = referral_stats(user.id)
     if not referred:
         await update.message.reply_text(
-            "🔗 Ekhono keu apnar link diye join koreni.\n"
-            "Refer link pete 👥 Refer Earn-e jan.",
+            "🔗 No one has joined with your link yet.\n"
+            f"To get your refer link, go to {BTN_REFER_EARN}.",
             reply_markup=menu_for(update.effective_user.id),
         )
         return
     lines = [
-        f"🔗 Apnar Referral:\n",
-        f"✅ Mot refer: {count} jon",
-        f"💰 Mot earning: ৳{earnings}\n",
-        "👥 Referred user-ra:",
+        f"🔗 Your Referrals:\n",
+        f"✅ Total refers: {count}",
+        f"💰 Total earning: ৳{earnings}\n",
+        "👥 Referred users:",
     ]
     for rid, first_name, uname in referred:
         label = first_name or "-"
@@ -698,7 +702,7 @@ async def balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     balance = get_balance(user.id)
     await update.message.reply_text(
-        f"💳 Apnar bortoman balance: ৳{balance}",
+        f"💳 Your current balance: ৳{balance}",
         reply_markup=menu_for(update.effective_user.id),
     )
 
@@ -714,10 +718,10 @@ async def my_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         name_line += f" (@{user.username})"
     await update.message.reply_text(
         "👤 My Account\n\n"
-        f"📛 Nam: {name_line}\n"
+        f"📛 Name: {name_line}\n"
         f"🆔 User ID: {user.id}\n"
         f"💳 Balance: ৳{balance}\n"
-        f"👥 Mot refer: {count} jon\n"
+        f"👥 Total refers: {count}\n"
         f"💰 Referral earning: ৳{earnings}",
         reply_markup=menu_for(update.effective_user.id),
     )
@@ -727,16 +731,18 @@ async def my_account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def how_it_works_text() -> str:
     return (
         "❓ How it works\n\n"
-        "📁 File kinte:\n"
-        "Premium Files-e jan, file-er nam-e click korun, tarpor Kinun "
-        "button-e click korun. Balance thakle file sathe sathe peye jaben.\n\n"
-        "💰 Taka add korte:\n"
-        "Add Money-e amount likhun, bKash-e taka pathiye TrxID din. "
-        "Admin approve korlei balance-e taka jog hobe.\n\n"
+        "📁 To buy a file:\n"
+        f"Go to {BTN_PREMIUM}, tap a file name, then tap the {BTN_BUY} "
+        "button. If you have enough balance, you will get the file "
+        "right away.\n\n"
+        "💰 To add money:\n"
+        f"Enter an amount in {BTN_MONEY}, send the money via bKash "
+        "and send the TrxID. Your balance will be updated once the "
+        "admin approves it.\n\n"
         "👥 Refer bonus:\n"
-        "Apnar refer link diye keu notun join korle apni paben "
-        f"proti refer-e ৳{get_refer_bonus()} bonus. Bonus sorasori "
-        "apnar balance-e jog hobe."
+        "If someone new joins with your refer link, you will get "
+        f"৳{get_refer_bonus()} bonus per refer. The bonus goes "
+        "directly to your balance."
     )
 
 
@@ -750,8 +756,8 @@ async def how_it_works_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ------------------------------------------------------------------ support
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        f"🛟 Admin-er sathe jogajog korun: {get_support_id()}\n\n"
-        "Apnar somossa-ti likhun, admin-ke pathiye dewa hobe.",
+        f"🛟 Contact the admin: {get_support_id()}\n\n"
+        "Write your problem, it will be sent to the admin.",
         reply_markup=menu_for(update.effective_user.id),
     )
     return SUPPORT_MSG
@@ -763,209 +769,216 @@ async def support_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         await context.bot.send_message(
             ADMIN_ID,
-            "🛟 Notun Support Message\n\n"
+            "🛟 New Support Message\n\n"
             f"👤 User: {user.full_name} (@{user.username or '-'}, "
             f"ID: {user.id})\n\n"
-            f"📝 Somossa:\n{problem}",
+            f"📝 Problem:\n{problem}",
         )
     except Exception as exc:
         logger.warning("Could not forward support message: %s", exc)
     await update.message.reply_text(
-        "✅ Apnar message admin-ke pathano hoyeche. "
-        "Admin sorasori apnake reply diben.",
+        "✅ Your message has been sent to the admin. "
+        "The admin will reply to you directly.",
         reply_markup=menu_for(update.effective_user.id),
     )
     return ConversationHandler.END
 
 
 # ------------------------------------------------------------------- admin
-def admin_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Product Jog",
-                              callback_data="admin_add")],
-        [InlineKeyboardButton("📋 Product Talika",
-                              callback_data="admin_list")],
-        [InlineKeyboardButton("🗑️ Product Delete",
-                              callback_data="admin_del")],
-        [InlineKeyboardButton("💰 Balance Jog",
-                              callback_data="admin_addbal")],
-        [InlineKeyboardButton("⏳ Pending Request",
-                              callback_data="admin_pending")],
-        [InlineKeyboardButton("⚙️ bKash Number Set",
-                              callback_data="admin_bkash")],
-        [InlineKeyboardButton("⚙️ Settings",
-                              callback_data="admin_settings")],
-    ])
+# ------------------------------------------------------- admin panel buttons
+BTN_P_ADD = "➕ Product Add"
+BTN_P_LIST = "📋 Product List"
+BTN_P_DEL = "🗑️ Product Delete"
+BTN_P_PENDING = "⏳ Pending Request"
+BTN_P_BAL = "💰 Balance Add"
+BTN_P_BKASH = "⚙️ bKash Number Set"
+BTN_P_SUPPORT = "🛟 Support ID Set"
+BTN_P_BONUS = "🎁 Refer Bonus Set"
 
 
-def settings_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ bKash Number Set",
-                              callback_data="settings_bkash")],
-        [InlineKeyboardButton("🛟 Support ID Set",
-                              callback_data="settings_support")],
-        [InlineKeyboardButton("🎁 Refer Bonus Set",
-                              callback_data="settings_bonus")],
-        [InlineKeyboardButton("🔙 Fire",
-                              callback_data="admin_panel")],
-    ])
+def admin_panel_markup() -> ReplyKeyboardMarkup:
+    """Coloured, grouped reply-keyboard panel (admin only)."""
+    rows = [
+        [_mkb(BTN_P_ADD, "success"), _mkb(BTN_P_LIST, "primary"),
+         _mkb(BTN_P_DEL, "danger")],
+        [_mkb(BTN_P_PENDING, "warning"), _mkb(BTN_P_BAL, "success")],
+        [_mkb(BTN_P_BKASH, "primary"), _mkb(BTN_P_SUPPORT, "primary"),
+         _mkb(BTN_P_BONUS, "success")],
+        [_mkb(BTN_BACK, "primary")],
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+async def _admin_only(update: Update) -> bool:
+    """Deny non-admins with the main menu; True only for the admin."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "❌ Only the admin can use this.",
+            reply_markup=menu_for(update.effective_user.id))
+        return False
+    return True
 
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Shudhu admin eta bebohar korte parben.")
+    if not await _admin_only(update):
         return
     await update.message.reply_text(
-        "⚙️ Admin Panel — beche nin:",
-        reply_markup=admin_menu_markup(),
+        "⚙️ Admin Panel\n"
+        "🛍️ Manage your shop — choose an option below:",
+        reply_markup=admin_panel_markup(),
     )
 
 
 async def set_bkash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Shudhu admin eta bebohar korte parben.")
+        await update.message.reply_text("❌ Only the admin can use this.")
         return
     if not context.args:
         await update.message.reply_text(
-            "Bebohar: /setbkash <bKash number>\nJemon: /setbkash 01XXXXXXXXX")
+            "Usage: /setbkash <bKash number>\nExample: /setbkash 01XXXXXXXXX")
         return
     set_bkash_number(context.args[0].strip())
     await update.message.reply_text(
-        f"✅ bKash number set hoyeche: {context.args[0].strip()}")
+        f"✅ bKash number set: {context.args[0].strip()}")
 
 
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        await query.edit_message_text("❌ Shudhu admin eta korte parben.")
+# -------------------------------------------- admin panel actions
+# The panel is a reply keyboard now (no Settings submenu): the three
+# set-value options are top-level panel buttons with their own flows.
+async def panel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _admin_only(update):
+        return
+    with _db_lock, db() as conn:
+        products = conn.execute(
+            "SELECT id, name, price FROM products ORDER BY id"
+        ).fetchall()
+    if not products:
+        ptext = "📋 No products yet."
+    else:
+        lines = ["📋 Product List:\n"]
+        for p in products:
+            lines.append(f"{p['id']}. {p['name']} — ৳{p['price']}")
+        ptext = "\n".join(lines)
+    await update.message.reply_text(ptext, reply_markup=admin_panel_markup())
+
+
+async def panel_delete_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _admin_only(update):
+        return
+    with _db_lock, db() as conn:
+        products = conn.execute(
+            "SELECT id, name FROM products ORDER BY id"
+        ).fetchall()
+    if not products:
+        await update.message.reply_text(
+            "🗑️ There is no product to delete.",
+            reply_markup=admin_panel_markup())
+        return
+    keyboard = [[InlineKeyboardButton(
+        f"🗑️ {p['name']}", callback_data=f"del_{p['id']}")]
+        for p in products]
+    await update.message.reply_text(
+        "🗑️ Which product do you want to delete?",
+        reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def panel_pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _admin_only(update):
+        return
+    with _db_lock, db() as conn:
+        reqs = conn.execute(
+            "SELECT * FROM money_requests WHERE status = 'pending' "
+            "ORDER BY id"
+        ).fetchall()
+    if not reqs:
+        await update.message.reply_text(
+            "⏳ No pending requests.",
+            reply_markup=admin_panel_markup())
+        return
+    for r in reqs:
+        keyboard = [[
+            InlineKeyboardButton("✅ Approve",
+                                 callback_data=f"approve_{r['id']}"),
+            InlineKeyboardButton("❌ Reject",
+                                 callback_data=f"reject_{r['id']}"),
+        ]]
+        await context.bot.send_message(
+            update.effective_chat.id,
+            f"💰 Request #{r['id']}\n"
+            f"👤 User ID: {r['user_id']}\n"
+            f"💵 Amount: ৳{r['amount']}\n"
+            f"🔢 TrxID: {r['trxid']}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+
+async def panel_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
         return None
-    data = query.data
+    await update.message.reply_text("➕ Enter the product name:")
+    return ADD_NAME
 
-    if data == "admin_list":
-        with _db_lock, db() as conn:
-            products = conn.execute(
-                "SELECT id, name, price FROM products ORDER BY id"
-            ).fetchall()
-        if not products:
-            await query.edit_message_text("📋 Kono product nei.")
-        else:
-            lines = ["📋 Product Talika:\n"]
-            for p in products:
-                lines.append(f"{p['id']}. {p['name']} — ৳{p['price']}")
-            await query.edit_message_text("\n".join(lines))
+
+async def panel_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
         return None
+    await update.message.reply_text(
+        "💰 Whose balance do you want to increase? Enter the User ID:")
+    return BAL_USER
 
-    if data == "admin_del":
-        with _db_lock, db() as conn:
-            products = conn.execute(
-                "SELECT id, name FROM products ORDER BY id"
-            ).fetchall()
-        if not products:
-            await query.edit_message_text("🗑️ Delete korar moto kono product nei.")
-            return None
-        keyboard = [[InlineKeyboardButton(
-            f"🗑️ {p['name']}", callback_data=f"del_{p['id']}")]
-            for p in products]
-        await query.edit_message_text(
-            "🗑️ Kon product delete korben?",
-            reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def panel_set_bkash(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
         return None
+    current = get_bkash_number() or "not set"
+    await update.message.reply_text(
+        f"⚙️ Current bKash number: {current}\n"
+        "Enter a new bKash number:")
+    return SET_BKASH
 
-    if data == "admin_pending":
-        with _db_lock, db() as conn:
-            reqs = conn.execute(
-                "SELECT * FROM money_requests WHERE status = 'pending' "
-                "ORDER BY id"
-            ).fetchall()
-        if not reqs:
-            await query.edit_message_text("⏳ Kono pending request nei.")
-            return None
-        for r in reqs:
-            keyboard = [[
-                InlineKeyboardButton("✅ Onumodon",
-                                     callback_data=f"approve_{r['id']}"),
-                InlineKeyboardButton("❌ Batil",
-                                     callback_data=f"reject_{r['id']}"),
-            ]]
-            await context.bot.send_message(
-                query.message.chat_id,
-                f"💰 Request #{r['id']}\n"
-                f"👤 User ID: {r['user_id']}\n"
-                f"💵 Poriman: ৳{r['amount']}\n"
-                f"🔢 TrxID: {r['trxid']}",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+
+async def panel_set_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
         return None
+    current = get_support_id()
+    await update.message.reply_text(
+        f"🛟 Current Support ID: {current}\n"
+        "Enter a new Support ID (numbers only):")
+    return SET_SUPPORT
 
-    if data == "admin_bkash":
-        current = get_bkash_number() or "set kora hoyni"
-        await query.edit_message_text(
-            f"⚙️ Bortoman bKash number: {current}\n\n"
-            f"Bodlate likhun: /setbkash <notun number>")
+
+async def panel_set_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not await _admin_only(update):
         return None
-
-    if data == "admin_add":
-        await query.edit_message_text("➕ Product-er nam likhun:")
-        return ADD_NAME
-
-    if data == "admin_addbal":
-        await query.edit_message_text(
-            "💰 Kon user-er balance baraben? User ID likhun:")
-        return BAL_USER
-
-    if data == "admin_panel":
-        await query.edit_message_text(
-            "⚙️ Admin Panel — beche nin:",
-            reply_markup=admin_menu_markup())
-        return None
-
-    if data == "admin_settings":
-        await query.edit_message_text(
-            "⚙️ Settings — ki bodlate chan?",
-            reply_markup=settings_menu_markup())
-        return None
-
-    if data == "settings_bkash":
-        await query.edit_message_text(
-            "⚙️ Notun bKash number likhun:")
-        return SET_BKASH
-
-    if data == "settings_support":
-        await query.edit_message_text(
-            "🛟 Notun Support ID likhun (shudhu sonkha):")
-        return SET_SUPPORT
-
-    if data == "settings_bonus":
-        await query.edit_message_text(
-            "🎁 Notun Refer Bonus amount likhun (taka, shudhu sonkha):")
-        return SET_BONUS
-
-    return None
+    current = get_refer_bonus()
+    await update.message.reply_text(
+        f"🎁 Current Refer Bonus: ৳{current}\n"
+        "Enter a new Refer Bonus amount (taka, numbers only):")
+    return SET_BONUS
 
 
 async def admin_delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
-        await query.edit_message_text("❌ Shudhu admin eta korte parben.")
+        await query.edit_message_text("❌ Only the admin can do this.")
         return
     product_id = int(query.data.split("_", 1)[1])
     with _db_lock, db() as conn:
         conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         conn.commit()
-    await query.edit_message_text(f"🗑️ Product #{product_id} delete hoyeche.")
+    await query.edit_message_text(f"🗑️ Product #{product_id} has been deleted.")
 
 
 # -------------------------------------------- admin: settings (steps)
 async def set_bkash_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     number = update.message.text.strip()
     if not number:
-        await update.message.reply_text("❌ Khali rakha jabe na. Abar likhun:")
+        await update.message.reply_text("❌ It cannot be empty. Please enter again:")
         return SET_BKASH
     set_bkash_number(number)
     await update.message.reply_text(
-        f"✅ bKash number set hoyeche: {number}",
+        f"✅ bKash number set: {number}",
         reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
@@ -975,11 +988,11 @@ async def set_support_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         support_id = int(update.message.text.strip())
     except ValueError:
         await update.message.reply_text(
-            "❌ Sothik Support ID (sonkha) likhun.")
+            "❌ Please enter a valid Support ID (numbers only).")
         return SET_SUPPORT
     set_support_id(str(support_id))
     await update.message.reply_text(
-        f"✅ Support ID set hoyeche: {support_id}",
+        f"✅ Support ID set: {support_id}",
         reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
@@ -991,11 +1004,11 @@ async def set_bonus_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             raise ValueError
     except ValueError:
         await update.message.reply_text(
-            "❌ Sothik amount likhun (0 ba tar beshi sonkha).")
+            "❌ Please enter a valid amount (0 or more).")
         return SET_BONUS
     set_refer_bonus(amount)
     await update.message.reply_text(
-        f"✅ Refer Bonus set hoyeche: ৳{amount}",
+        f"✅ Refer Bonus set: ৳{amount}",
         reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
@@ -1003,22 +1016,22 @@ async def set_bonus_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # -------------------------------------------- admin: add product (steps)
 async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["prod_name"] = update.message.text.strip()
-    await update.message.reply_text("🖼️ Ebar product-er chobi pathan:")
+    await update.message.reply_text("🖼️ Now send the product photo:")
     return ADD_PHOTO
 
 
 async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.photo:
-        await update.message.reply_text("❌ Chobi pathan (file noy, chobi hisebe).")
+        await update.message.reply_text("❌ Please send a photo (as a photo, not a file).")
         return ADD_PHOTO
     context.user_data["prod_photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("📝 Ebar product-er biboron likhun:")
+    await update.message.reply_text("📝 Now write the product description:")
     return ADD_DESC
 
 
 async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["prod_desc"] = update.message.text.strip()
-    await update.message.reply_text("💰 Ebar dam likhun (shudhu sonkha, jemon: 100):")
+    await update.message.reply_text("💰 Now enter the price (numbers only, e.g. 100):")
     return ADD_PRICE
 
 
@@ -1028,16 +1041,16 @@ async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if price <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Sothik dam likhun (jemon: 100).")
+        await update.message.reply_text("❌ Please enter a valid price (e.g. 100).")
         return ADD_PRICE
     context.user_data["prod_price"] = price
-    await update.message.reply_text("📎 Ebar file-ti document hisebe pathan:")
+    await update.message.reply_text("📎 Now send the file as a document:")
     return ADD_FILE
 
 
 async def add_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.document:
-        await update.message.reply_text("❌ File-ti document hisebe pathan.")
+        await update.message.reply_text("❌ Please send the file as a document.")
         return ADD_FILE
     data = context.user_data
     with _db_lock, db() as conn:
@@ -1050,7 +1063,7 @@ async def add_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         conn.commit()
         prod_id = cur.lastrowid
     await update.message.reply_text(
-        f"✅ Product jog hoyeche!\n"
+        f"✅ Product added!\n"
         f"📌 {data['prod_name']} — ৳{data['prod_price']} (ID: {prod_id})",
         reply_markup=menu_for(update.effective_user.id),
     )
@@ -1064,10 +1077,10 @@ async def bal_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         user_id = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Sothik User ID (sonkha) likhun.")
+        await update.message.reply_text("❌ Please enter a valid User ID (numbers only).")
         return BAL_USER
     context.user_data["bal_user"] = user_id
-    await update.message.reply_text("💰 Koto taka jog korben? Sonkha likhun:")
+    await update.message.reply_text("💰 How much money do you want to add? Enter the number:")
     return BAL_AMOUNT
 
 
@@ -1077,21 +1090,21 @@ async def bal_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if amount <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Sothik sonkha likhun (jemon: 100).")
+        await update.message.reply_text("❌ Please enter a valid number (e.g. 100).")
         return BAL_AMOUNT
     user_id = context.user_data.pop("bal_user")
     get_user(user_id)
     new_balance = change_balance(user_id, amount)
     await update.message.reply_text(
-        f"✅ User {user_id} er balance-e ৳{amount} jog hoyeche. "
-        f"Bortoman balance: ৳{new_balance}",
+        f"✅ ৳{amount} has been added to User {user_id}'s balance. "
+        f"Current balance: ৳{new_balance}",
         reply_markup=menu_for(update.effective_user.id),
     )
     try:
         await context.bot.send_message(
             user_id,
-            f"💰 Admin apnar balance-e ৳{amount} jog korechen.\n"
-            f"💳 Bortoman balance: ৳{new_balance}",
+            f"💰 The admin has added ৳{amount} to your balance.\n"
+            f"💳 Current balance: ৳{new_balance}",
         )
     except Exception as exc:
         logger.warning("Could not notify user: %s", exc)
@@ -1101,15 +1114,15 @@ async def bal_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clear_flow_data(context)
     await update.message.reply_text(
-        "❌ Batil kora hoyeche.", reply_markup=menu_for(update.effective_user.id))
+        "❌ Cancelled.", reply_markup=menu_for(update.effective_user.id))
     return ConversationHandler.END
 
 
 # ------------------------------------------- menu-button router (UX fix)
-# User-reported bug: tapping a menu button mid-flow used to feed the button
+# User-reported bug: tapping a menu or panel button mid-flow used to feed the button
 # text into the unfinished step (validation errors, wrong data saved, many
 # confusing messages) or leave the old flow active behind the new screen.
-# Fix: every conversation state starts with this router, so a menu tap
+# Fix: every conversation state starts with this router, so a menu or panel tap
 # cleanly cancels the old flow and runs the tapped action. One shared states
 # dict is used by all conversations, so a router jump (e.g. Support flow ->
 # Add Money) keeps working no matter which conversation caught the tap.
@@ -1123,6 +1136,14 @@ MENU_ACTIONS = {
     BTN_HOW: how_it_works_menu,
     BTN_SUPPORT: support_start,
     BTN_ADMIN: admin_panel,
+    BTN_P_ADD: panel_add_product,
+    BTN_P_LIST: panel_list,
+    BTN_P_DEL: panel_delete_picker,
+    BTN_P_PENDING: panel_pending,
+    BTN_P_BAL: panel_add_balance,
+    BTN_P_BKASH: panel_set_bkash,
+    BTN_P_SUPPORT: panel_set_support,
+    BTN_P_BONUS: panel_set_bonus,
 }
 _MENU_PATTERN = "^(" + "|".join(re.escape(b) for b in MENU_ACTIONS) + ")$"
 
@@ -1148,7 +1169,7 @@ async def menu_button_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ------------------------------------------------- friendly step hints
 # Wrong-type input during a step (photo where a number is expected, etc.)
-# gets ONE short Banglish hint and stays in the same step — never a raw
+# gets ONE short English hint and stays in the same step — never a raw
 # error, never silence, never a kicked-out flow.
 async def _hint(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 text: str, state: int) -> int:
@@ -1158,68 +1179,68 @@ async def _hint(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 async def hint_name(update, context):
     return await _hint(update, context,
-                       "📌 Product-er nam likhe pathan.", ADD_NAME)
+                       "📌 Please write the product name.", ADD_NAME)
 
 
 async def hint_photo(update, context):
     return await _hint(update, context,
-                       "🖼️ Ebar product-er chobi pathan (chobi hisebe, file noy).",
+                       "🖼️ Please send the product photo (as a photo, not a file).",
                        ADD_PHOTO)
 
 
 async def hint_desc(update, context):
     return await _hint(update, context,
-                       "📝 Product-er biboron likhe pathan.", ADD_DESC)
+                       "📝 Please write the product description.", ADD_DESC)
 
 
 async def hint_price(update, context):
     return await _hint(update, context,
-                       "💰 Dam shudhu sonkha diye likhun (jemon: 100).", ADD_PRICE)
+                       "💰 Please enter the price in numbers only (e.g. 100).", ADD_PRICE)
 
 
 async def hint_file(update, context):
     return await _hint(update, context,
-                       "📎 File-ti document hisebe pathan.", ADD_FILE)
+                       "📎 Please send the file as a document.", ADD_FILE)
 
 
 async def hint_bal_user(update, context):
     return await _hint(update, context,
-                       "🆔 User ID (sonkha) likhun.", BAL_USER)
+                       "🆔 Please enter the User ID (numbers only).", BAL_USER)
 
 
 async def hint_bal_amount(update, context):
     return await _hint(update, context,
-                       "💰 Sonkha likhun (jemon: 100).", BAL_AMOUNT)
+                       "💰 Please enter the number (e.g. 100).", BAL_AMOUNT)
 
 
 async def hint_money_amount(update, context):
     return await _hint(update, context,
-                       "💰 Shudhu sonkhata likhun (jemon: 100).", MONEY_AMOUNT)
+                       "💰 Please enter only the number (e.g. 100).", MONEY_AMOUNT)
 
 
 async def hint_money_trxid(update, context):
     return await _hint(update, context,
-                       "🔢 TrxID-ti likhe pathan.", MONEY_TRXID)
+                       "🔢 Please write the TrxID.", MONEY_TRXID)
 
 
 async def hint_support(update, context):
     return await _hint(update, context,
-                       "📝 Somossa-ti likhe pathan.", SUPPORT_MSG)
+                       "📝 Please write your problem.", SUPPORT_MSG)
 
 
 async def hint_bkash(update, context):
     return await _hint(update, context,
-                       "📱 bKash number-ti likhun.", SET_BKASH)
+                       "📱 Please enter the bKash number.", SET_BKASH)
 
 
 async def hint_support_id(update, context):
     return await _hint(update, context,
-                       "🆔 Support ID (sonkha) likhun.", SET_SUPPORT)
+                       "🆔 Please enter the Support ID (numbers only).", SET_SUPPORT)
 
 
 async def hint_bonus(update, context):
     return await _hint(update, context,
-                       "🎁 Bonus amount sonkha diye likhun.", SET_BONUS)
+                       "🎁 Please enter the bonus amount in numbers.", SET_BONUS)
 
 
 def _state_handlers(*handlers, hint=None):
@@ -1312,7 +1333,7 @@ async def error_handler(update, context):
         if message is not None:
             user_id = update.effective_user.id if update.effective_user else 0
             await message.reply_text(
-                "⚠️ Kichu ekta somossa hoyeche. Abar chesta korun.",
+                "⚠️ Something went wrong. Please try again.",
                 reply_markup=menu_for(user_id),
             )
     except Exception:
@@ -1331,10 +1352,14 @@ def main() -> None:
 
     app = Application.builder().token(TOKEN).build()
 
-    # Admin product-add conversation (entered from /admin inline menu)
+    # Admin product-add conversation (entered from admin panel buttons)
     add_product_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_callback,
-                                           pattern="^admin_(add|addbal)$")],
+        entry_points=[
+            MessageHandler(filters.Regex(f"^{BTN_P_ADD}$"),
+                           panel_add_product),
+            MessageHandler(filters.Regex(f"^{BTN_P_BAL}$"),
+                           panel_add_balance),
+        ],
         states=SHARED_STATES,
         fallbacks=CONV_FALLBACKS,
         allow_reentry=True,
@@ -1358,10 +1383,16 @@ def main() -> None:
         allow_reentry=True,
     )
 
-    # Admin settings conversation (entered from /admin → Settings)
-    settings_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_callback,
-                                           pattern="^settings_(bkash|support|bonus)$")],
+    # Admin set-value conversation (entered from admin panel buttons)
+    set_value_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(f"^{BTN_P_BKASH}$"),
+                           panel_set_bkash),
+            MessageHandler(filters.Regex(f"^{BTN_P_SUPPORT}$"),
+                           panel_set_support),
+            MessageHandler(filters.Regex(f"^{BTN_P_BONUS}$"),
+                           panel_set_bonus),
+        ],
         states=SHARED_STATES,
         fallbacks=CONV_FALLBACKS,
         allow_reentry=True,
@@ -1374,10 +1405,13 @@ def main() -> None:
     app.add_handler(add_product_conv)
     app.add_handler(money_conv)
     app.add_handler(support_conv)
-    app.add_handler(settings_conv)
-    app.add_handler(CallbackQueryHandler(
-        admin_callback,
-        pattern="^(admin_list|admin_del|admin_pending|admin_bkash|admin_settings|admin_panel)$"))
+    app.add_handler(set_value_conv)
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_LIST}$"), panel_list))
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_DEL}$"), panel_delete_picker))
+    app.add_handler(MessageHandler(
+        filters.Regex(f"^{BTN_P_PENDING}$"), panel_pending))
     app.add_handler(CallbackQueryHandler(
         admin_delete_product, pattern="^del_[0-9]+$"))
     app.add_handler(CallbackQueryHandler(
@@ -1409,7 +1443,7 @@ def main() -> None:
 
     app.add_error_handler(error_handler)
 
-    logger.info("Paid File Sell Bot v3 is running.")
+    logger.info("Paid File Sell Bot v4 is running.")
     app.run_polling()
 
 
