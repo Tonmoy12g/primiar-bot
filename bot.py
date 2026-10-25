@@ -363,9 +363,9 @@ DEPOSIT_METHODS = (
 
 
 _METHOD_BUTTONS = {
-    "bkash": "📱 bKash",
-    "nagad": "📱 Nagad",
-    "rocket": "🚀 Rocket",
+    "bkash": "bKash (Personal Send Money)",
+    "nagad": "Nagad (Personal Send Money)",
+    "rocket": "Rocket (Personal Send Money)",
 }
 
 
@@ -3853,7 +3853,9 @@ async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     rows = [[_mkb(_METHOD_BUTTONS[key], "primary")] for key, _, _ in methods]
     await update.message.reply_text(
-        "💰 Choose a payment method:",
+        "💰 Deposit / Balance Recharge (Send Money)\n\n"
+        "Send Money to our personal number to add balance automatically:\n\n"
+        "Click your preferred method:",
         reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
     )
     return MONEY_METHOD
@@ -3875,8 +3877,9 @@ async def add_money_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["money_method"] = key
     name = dict(DEPOSIT_METHODS)[key]
     await update.message.reply_text(
-        f"💰 How much money do you want to add via {name}? "
-        "Enter only the number (e.g. 100).",
+        f"{name} Personal Deposit (Send Money)\n\n"
+        "How much money (৳) do you want to deposit? "
+        "Send the amount (e.g. 50, 100, 500):",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_AMOUNT
@@ -3905,20 +3908,34 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("money_amount", None)
         context.user_data.pop("money_method", None)
         return ConversationHandler.END
+    trxid_hint = "10-digit " if method == "bkash" else ""
     await update.message.reply_text(
-        f"💰 To add {amount} taka via {name}:\n\n"
-        f"1️⃣ Send {amount} taka via {name} Send Money to: {number}\n"
-        f"2️⃣ Send the payment TrxID here.",
+        f"{name} Personal Deposit (Send Money)\n\n"
+        f"Deposit Amount: ৳{amount}\n"
+        f"{name} Personal Number: {number}\n\n"
+        "How to pay:\n"
+        f"1. Send exactly ৳{amount} Send Money to the number above!\n"
+        "2. After successful Send Money, copy the TrxID from the "
+        "received message.\n"
+        "3. Send your TrxID below.\n"
+        "Your balance will be added automatically as soon as the money "
+        "is received!\n\n"
+        f"Please send your {name} {trxid_hint}TrxID below:",
         reply_markup=menu_for(update.effective_user.id),
     )
     return MONEY_TRXID
 
 
 async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    trxid = update.message.text.strip()
+    trxid = update.message.text.strip().upper()
+    if not trxid:
+        await update.message.reply_text(
+            "❌ Please send your TrxID.")
+        return MONEY_TRXID
     amount = context.user_data.get("money_amount")
     method = context.user_data.get("money_method", "bkash")
     name = dict(DEPOSIT_METHODS).get(method, "bKash")
+    number = get_method_number(method)
     user = update.effective_user
     with _db_lock, db() as conn:
         cur = conn.execute(
@@ -3948,12 +3965,20 @@ async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.warning("Could not notify admin: %s", exc)
     await update.message.reply_text(
-        "✅ Deposit request received!\n\n"
-        "⏳ Your request could not be auto-verified, so it is now "
-        "under manual review. The admin will verify your transaction "
-        f"and add ৳{amount} to your balance.\n\n"
-        "There is no need to message support separately — "
-        "please wait patiently.",
+        "⚠️ Auto deposit has a temporary issue!\n\n"
+        "Your deposit request has been received and is currently "
+        "pending.\n\n"
+        "👨‍💼 Admin Review: As auto verification failed, the admin "
+        "will manually verify your transaction and add the balance "
+        "within 6 hours.\n\n"
+        "❗ This request has already reached the admin, so there is "
+        "no need to message or SMS the support ID. "
+        "Please wait patiently!\n\n"
+        f"💳 Deposit Method: {name}\n"
+        f"📱 Sender Number: {number}\n"
+        f"💵 Deposit Amount: ৳{amount}\n"
+        f"🔑 TrxID: {trxid}\n"
+        "⏳ Status: Manual Review Pending (Pending)",
         reply_markup=menu_for(update.effective_user.id),
     )
     context.user_data.pop("money_amount", None)
