@@ -70,6 +70,15 @@ from telegram.ext import (
     filters,
 )
 
+# Optional Flask import: the keep-alive endpoint is a nice-to-have.
+# If Flask is not installed, the bot logs a warning and polls normally.
+try:
+    from flask import Flask
+    _FLASK_AVAILABLE = True
+except ImportError:  # pragma: no cover - only when Flask is missing
+    Flask = None  # type: ignore
+    _FLASK_AVAILABLE = False
+
 # ---------------------------------------------------------------- config
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
@@ -1501,6 +1510,65 @@ async def error_handler(update, context):
         logger.exception("Failed to send error message")
 
 
+# ------------------------------------------------------- keep-alive (host-independent)
+# Keep-alive: this bot uses polling, so it runs on any host with Python
+# (Render, Railway, a VPS, ...). Nothing here is tied to one host: the
+# port comes from the PORT environment variable (fallback 8080) and no
+# host URL is hardcoded in this file.
+# To keep a Render free instance awake, point a free 5-minute HTTP
+# monitor (e.g. UptimeRobot) at https://<your-host-url>/ping — the
+# monitor hits this endpoint and the host treats the instance as busy,
+# so it does not sleep. Replace <your-host-url> with whatever host you
+# deploy on; the bot itself needs no change for a different host.
+# If Flask is not installed, the bot logs a warning and polls normally
+# (it still works, just without the keep-alive endpoint).
+def create_keepalive_app():
+    """Flask app with / and /ping returning 200, or None if Flask is missing."""
+    if not _FLASK_AVAILABLE:
+        return None
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return "OK", 200
+
+    @app.route("/ping")
+    def ping():
+        return "OK", 200
+
+    return app
+
+
+# Module-level app so it can be smoke-tested (Flask test client) without
+# starting polling. None when Flask is not installed.
+keepalive_app = create_keepalive_app()
+
+
+def _run_keepalive_server(app, port: int) -> None:
+    try:
+        app.run(host="0.0.0.0", port=port, use_reloader=False)
+    except Exception as exc:
+        logger.warning("Keep-alive server stopped: %s", exc)
+
+
+def start_keepalive_server() -> None:
+    """Start the keep-alive HTTP server in a daemon thread (before polling)."""
+    if keepalive_app is None:
+        logger.warning(
+            "Flask is not installed; keep-alive endpoint disabled, "
+            "polling continues normally.")
+        return
+    try:
+        port = int(os.environ.get("PORT", "8080") or 8080)
+    except ValueError:
+        port = 8080
+    thread = threading.Thread(
+        target=_run_keepalive_server, args=(keepalive_app, port),
+        daemon=True, name="keepalive")
+    thread.start()
+    logger.info("Keep-alive server listening on port %s (/ and /ping).", port)
+
+
 # --------------------------------------------------------------------- main
 def main() -> None:
     if not TOKEN:
@@ -1607,6 +1675,11 @@ def main() -> None:
         filters.TEXT & ~filters.COMMAND, product_detail_by_name))
 
     app.add_error_handler(error_handler)
+
+    # Keep-alive HTTP server first (daemon thread), then polling.
+    # Works on any host; on Render free tier, a 5-minute monitor hitting
+    # /ping keeps the instance awake (see the keep-alive comment above).
+    start_keepalive_server()
 
     logger.info("Paid File Sell Bot v4 is running.")
     app.run_polling()
