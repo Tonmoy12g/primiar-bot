@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Paid File Sell Bot — v4.2 (Render Optimized)
-=============================================
+Paid File Sell Bot — v4.3 (Render Stable)
+=========================================
 Fixed:
-  • close_loop=False for stable polling on Render.
-  • drop_pending_updates=True to avoid crash on restart.
-  • Flask server binds to $PORT with 0.0.0.0.
-  • Duplicate TrxID check.
-  • Atomic balance deduction (no negative balance).
+  • SQLite WAL mode + timeout to prevent "database is locked" on Render.
+  • close_loop=False & drop_pending_updates=True for stable polling.
+  • Admin Panel and all menus will work without crashing.
 """
 
 import base64
@@ -117,8 +115,10 @@ def menu_for(user_id: int) -> ReplyKeyboardMarkup:
 
 # ------------------------------------------------------------------- db
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    # FIX: Render Free Instance এ Database Lock এড়াতে timeout এবং WAL মোড
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 def init_db() -> None:
@@ -1181,7 +1181,7 @@ def main() -> None:
 
     start_keepalive_server()
 
-    logger.info("Paid File Sell Bot v4.2 is running.")
+    logger.info("Paid File Sell Bot v4.3 is running.")
     
     # FIXED FOR RENDER: close_loop=False & drop_pending_updates=True
     app.run_polling(close_loop=False, drop_pending_updates=True)
