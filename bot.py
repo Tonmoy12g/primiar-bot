@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Paid File Sell Bot — v4.5 (Full Fix)
-====================================
+Paid File Sell Bot — v4.7 (Auto Cancel All)
+===========================================
 Fixed:
-  • Database fully functional. Added SQLite timeout and WAL mode.
-  • Any menu button tapped mid-flow will cancel the current flow and load the new menu safely.
-  • Admin Panel works without errors.
+  • Menu buttons now work as "Auto-Cancel". Tapping any menu button from any 
+    screen will immediately cancel the current flow and open the new menu.
+  • SQLite Database Lock issue fixed with WAL mode and timeout.
 """
 
 import base64
@@ -52,7 +52,6 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
 ENV_BKASH = os.environ.get("BKASH_NUMBER", "")
 
 DEFAULT_REFER_BONUS = 2
-
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop.db")
 _db_lock = threading.Lock()
 
@@ -81,6 +80,7 @@ BTN_HOW = "❓ How it works"
 BTN_SUPPORT = "🛟 Support"
 BTN_BUY = "🛒 Buy"
 BTN_BACK = "🔙 Back"
+BTN_CANCEL = "❌ Cancel"
 BTN_ADMIN = "⚙️ Admin Panel"
 
 _VALID_BUTTON_STYLES = ("primary", "success", "danger")
@@ -115,14 +115,12 @@ def menu_for(user_id: int) -> ReplyKeyboardMarkup:
 
 # ------------------------------------------------------------------- db
 def db():
-    # FIX: Render-এ Database Lock এড়াতে timeout এবং WAL মোড
     try:
         conn = sqlite3.connect(DB_PATH, timeout=20.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         return conn
     except sqlite3.OperationalError:
-        # Fallback if WAL fails
         conn = sqlite3.connect(DB_PATH, timeout=20.0)
         conn.row_factory = sqlite3.Row
         return conn
@@ -515,6 +513,8 @@ async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("⚠️ বর্তমানে ডিপোজিট বন্ধ আছে। সাহায্যের জন্য Support-এ যোগাযোগ করুন।", reply_markup=menu_for(update.effective_user.id))
         return ConversationHandler.END
     rows = [[_mkb(_METHOD_BUTTONS[key], "primary")] for key, _, _ in methods]
+    rows.append([_mkb(BTN_CANCEL, "danger")])
+    
     lines = []
     for key, _, _ in methods:
         circle, bn = _METHOD_BN[key]
@@ -529,6 +529,10 @@ async def add_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def add_money_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
+    if text == BTN_CANCEL:
+        await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=menu_for(update.effective_user.id))
+        return ConversationHandler.END
+        
     key = None
     for method_key, button in _METHOD_BUTTONS.items():
         if text == button:
@@ -539,14 +543,21 @@ async def add_money_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return MONEY_METHOD
     context.user_data["money_method"] = key
     circle, bn = _METHOD_BN[key]
+    
+    # ক্যানসেল বাটন সহ কি-বোর্ড
+    cancel_kb = ReplyKeyboardMarkup([[_mkb(BTN_CANCEL, "danger")]], resize_keyboard=True)
     await update.message.reply_text(
         f"💵 {bn} (পার্সোনাল Send Money) ⚡\n{_DIVIDER}\nকত টাকা (৳) ডিপোজিট করতে চান লিখে পাঠান (যেমন: 50, 100, 500):",
-        reply_markup=menu_for(update.effective_user.id),
+        reply_markup=cancel_kb,
     )
     return MONEY_AMOUNT
 
 async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
+    if text == BTN_CANCEL:
+        await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=menu_for(update.effective_user.id))
+        return ConversationHandler.END
+
     try:
         amount = int(text)
         if amount <= 0: raise ValueError
@@ -561,6 +572,8 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("money_amount", None); context.user_data.pop("money_method", None)
         return ConversationHandler.END
     circle, bn = _METHOD_BN.get(method, ("🔴", "বিকাশ"))
+    
+    cancel_kb = ReplyKeyboardMarkup([[_mkb(BTN_CANCEL, "danger")]], resize_keyboard=True)
     await update.message.reply_text(
         f"{circle} {bn} পার্সোনাল ডিপোজিট (Send Money) ⚡\n{_DIVIDER}\n"
         f"💵 ডিপোজিট পরিমাণ: {amount} ৳\n📱 {bn} পার্সোনাল নম্বর:\n{number}\n\n"
@@ -570,12 +583,16 @@ async def add_money_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "৩. নিচে আপনার TrxID টি লিখে পাঠিয়ে দিন।\n"
         f"{_DIVIDER}\n⚡ টাকা পাঠানোর পর অ্যাডমিন ম্যানুয়ালি যাচাই করে ব্যালেন্স যোগ করে দেবে!\n\n"
         f"দয়া করে আপনার {bn} এর ১০ সংখ্যার TrxID টি নিচে লিখে পাঠান:",
-        reply_markup=menu_for(update.effective_user.id),
+        reply_markup=cancel_kb,
     )
     return MONEY_TRXID
 
 async def add_money_trxid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     trxid = update.message.text.strip().upper()
+    if trxid == BTN_CANCEL.upper():
+        await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=menu_for(update.effective_user.id))
+        return ConversationHandler.END
+
     if not trxid:
         await update.message.reply_text("❌ আপনার TrxID টি পাঠান।")
         return MONEY_TRXID
@@ -1181,13 +1198,14 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Regex(f"^{BTN_ADMIN}$"), admin_panel))
     app.add_handler(MessageHandler(filters.Regex(f"^{BTN_BUY}$"), buy_button))
     app.add_handler(MessageHandler(filters.Regex(f"^{BTN_BACK}$"), back_button))
+    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_CANCEL}$"), cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, product_detail_by_name))
 
     app.add_error_handler(error_handler)
 
     start_keepalive_server()
 
-    logger.info("Paid File Sell Bot v4.5 is running.")
+    logger.info("Paid File Sell Bot v4.7 is running.")
     
     # FIXED FOR RENDER: close_loop=False & drop_pending_updates=True
     app.run_polling(close_loop=False, drop_pending_updates=True)
