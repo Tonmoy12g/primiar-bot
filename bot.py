@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Paid File Sell Bot — v4.3 (Render Stable)
-=========================================
+Paid File Sell Bot — v4.4 (Render Stable & Clean UI)
+====================================================
 Fixed:
-  • SQLite WAL mode + timeout to prevent "database is locked" on Render.
+  • SQLite WAL mode + timeout prevents "database is locked" error on Render.
+  • Cleaned up Admin Panel (fewer buttons, compact layout).
   • close_loop=False & drop_pending_updates=True for stable polling.
-  • Admin Panel and all menus will work without crashing.
 """
 
 import base64
@@ -52,7 +52,6 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
 ENV_BKASH = os.environ.get("BKASH_NUMBER", "")
 
 DEFAULT_REFER_BONUS = 2
-
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop.db")
 _db_lock = threading.Lock()
 
@@ -739,6 +738,7 @@ BTN_P_TOGGLE_NAGAD = "🔄 Toggle Nagad"
 BTN_P_TOGGLE_ROCKET = "🔄 Toggle Rocket"
 
 def admin_panel_markup() -> ReplyKeyboardMarkup:
+    # ক্লিন এবং কমপ্যাক্ট লেআউট
     rows = [
         [_mkb(BTN_P_ADD, "success"), _mkb(BTN_P_LIST, "primary"), _mkb(BTN_P_DEL, "danger")],
         [_mkb(BTN_P_PENDING, "primary"), _mkb(BTN_P_BAL, "success")],
@@ -1181,7 +1181,7 @@ def main() -> None:
 
     start_keepalive_server()
 
-    logger.info("Paid File Sell Bot v4.3 is running.")
+    logger.info("Paid File Sell Bot v4.4 is running.")
     
     # FIXED FOR RENDER: close_loop=False & drop_pending_updates=True
     app.run_polling(close_loop=False, drop_pending_updates=True)
